@@ -1161,47 +1161,76 @@ class Orchestrator:
                 return None
         return await asyncio.to_thread(get)
 
-    async def deploy_preview(self) -> tuple[str, bool]:
+    # ------------------------------------------------------------- deploys (per project)
+    def deploy_target(self, project: str | None = None) -> dict:
+        """Repo, URLs and how to run gh/git for a project's deploys (the main project by default)."""
+        name = project or self.main_name
+        info = self.project_info(name)
+        main = name == self.main_name
+        return {"name": name, "title": self.project_root(name)[0],
+                "repo": (self.cfg.github_repo if main and self.cfg.github_enabled else info.get("repo")),
+                "staging_url": self.cfg.staging_url if main else info.get("staging_url"),
+                "production_url": self.cfg.production_url if main else info.get("production_url"),
+                "mirror": self.mirror if main else self.repos.mirror(name)}
+
+    async def _gh_for(self, name: str, *args: str) -> tuple[int, str]:
+        if name == self.main_name:
+            return await self._exec("gh", *args)
+        return await self.repos._x(name, "gh", *args)
+
+    def _deploy_ready(self, t: dict) -> str | None:
+        if not t["repo"]:
+            return (f"{t['title']} isn't connected to GitHub yet." +
+                    ("" if t["name"] == self.main_name else f" /project link {t['name']} owner/repo"))
+        if not t["staging_url"] and t["name"] != self.main_name:
+            return f"{t['title']} has no staging address yet: /project urls {t['name']} https://staging… https://…"
+        return None
+
+    async def deploy_preview(self, project: str | None = None) -> tuple[str, bool]:
         """What /deploy would put live, based on what staging really runs. (text, can_deploy)"""
-        if not self.cfg.github_enabled:
-            return "GitHub isn't configured yet, so there's nothing to deploy. See the README.", False
-        staging = await self.running_version(self.cfg.staging_url)
-        prod = await self.running_version(self.cfg.production_url)
+        t = self.deploy_target(project)
+        problem = self._deploy_ready(t)
+        if problem:
+            return problem, False
+        staging = await self.running_version(t["staging_url"])
+        prod = await self.running_version(t["production_url"])
         if not staging:
-            return ("I can't see a version running on staging yet (no /version.json), so there's nothing to promote. "
-                    "Staging gets a version after the first green build that includes the backend and frontend."), False
-        code, out = await self._exec("git", "-C", str(self.mirror), "log", "-1", "--format=%s (%cr)", staging)
+            return (f"I can't see a version running on {t['title']}'s staging yet (no /version.json), so there's "
+                    "nothing to promote. Staging gets a version after the first green pipeline."), False
+        code, out = await self._exec("git", "-C", str(t["mirror"]), "log", "-1", "--format=%s (%cr)", staging)
         what = out if code == 0 and out else "commit " + staging
-        lines = [f"🚀 Production will get exactly what staging runs now:",
+        lines = [f"🚀 {'' if t['name'] == self.main_name else t['title'] + ': '}Production will get exactly what staging runs now:",
                  f"• version {staging[:7]} – {what}",
                  f"• production currently runs: {prod[:7] if prod else 'nothing yet'}"]
         if prod and prod == staging:
             lines.append("\nProduction already runs this version.")
-        if self.cfg.staging_url:
-            lines.append(f"\nTry it first: {self.cfg.staging_url}")
+        if t["staging_url"]:
+            lines.append(f"\nTry it first: {t['staging_url']}")
         lines.append("\nThe server backs up the database first and rolls back automatically if checks fail.")
         return "\n".join(lines), not (prod and prod == staging)
 
-    async def deploy_drill(self) -> str:
-        if not self.cfg.github_enabled:
-            return "GitHub isn't configured yet."
+    async def deploy_drill(self, project: str | None = None) -> str:
+        t = self.deploy_target(project)
+        if not t["repo"]:
+            return self._deploy_ready(t) or "Not connected to GitHub."
         started = time.time() - 5
-        code, out = await self._exec("gh", "workflow", "run", "deploy-drill.yml", "-R", self.cfg.github_repo)
+        code, out = await self._gh_for(t["name"], "workflow", "run", "deploy-drill.yml", "-R", t["repo"])
         if code != 0:
-            return f"⚠️ Couldn't start the fire drill:\n{_tail(out, 400)}"
-        self._log("DEPLOY drill requested")
-        self._watch(self._watch_production(started, "deploy-drill.yml", "Drill"))
-        return ("🧯 Fire drill started on staging: a deliberately broken version is released, and the server must "
-                "detect it and roll back by itself. Takes 2–4 minutes; staging is briefly unavailable.")
+            return f"⚠️ Couldn't start the fire drill for {t['title']}:\n{_tail(out, 400)}"
+        self._log(f"DEPLOY drill requested ({t['name']})")
+        self._watch(self._watch_production(started, "deploy-drill.yml", "Drill", t["name"]))
+        return (f"🧯 Fire drill started on {t['title']}'s staging: a deliberately broken version is released, and "
+                "the server must detect it and roll back by itself. Takes 2–4 minutes.")
 
-    async def deploy_history(self) -> str:
-        if not self.cfg.github_enabled:
-            return "GitHub isn't configured yet."
-        lines = ["📜 Deployment history"]
+    async def deploy_history(self, project: str | None = None) -> str:
+        t = self.deploy_target(project)
+        if not t["repo"]:
+            return self._deploy_ready(t) or "Not connected to GitHub."
+        lines = [f"📜 Deployment history · {t['title']}"]
         for wf, label in (("deploy-production.yml", "Production"), ("pipeline.yml", "Staging (via pipeline)"),
                           ("deploy-drill.yml", "Fire drills")):
-            code, out = await self._exec("gh", "run", "list", "-R", self.cfg.github_repo, "--workflow", wf, "-L", "6",
-                                         "--json", "createdAt,conclusion,status,headSha,displayTitle")
+            code, out = await self._gh_for(t["name"], "run", "list", "-R", t["repo"], "--workflow", wf, "-L", "6",
+                                           "--json", "createdAt,conclusion,status,headSha,displayTitle")
             runs = json.loads(out) if code == 0 and out.startswith("[") else []
             lines.append(f"\n{label}:")
             if not runs:
@@ -1213,38 +1242,63 @@ class Orchestrator:
                 lines.append(f"  {icon} {when} UTC · {r['headSha'][:7]} · {_tail(r.get('displayTitle', ''), 38)}")
         return "\n".join(lines)
 
-    async def deploy_production(self) -> str:
-        if not self.cfg.github_enabled:
-            return "GitHub isn't configured yet."
+    async def deploy_production(self, project: str | None = None) -> str:
+        t = self.deploy_target(project)
+        if not t["repo"]:
+            return self._deploy_ready(t) or "Not connected to GitHub."
         started = time.time() - 5
-        code, out = await self._exec("gh", "workflow", "run", "deploy-production.yml", "-R", self.cfg.github_repo)
+        code, out = await self._gh_for(t["name"], "workflow", "run", "deploy-production.yml", "-R", t["repo"])
         if code != 0:
-            return f"⚠️ Couldn't start the production deploy:\n{_tail(out, 500)}"
-        self._log("DEPLOY production requested")
-        self._watch(self._watch_production(started))
-        return "🚀 Production deploy started. I'll tell you when it's live (usually 1–3 minutes)."
+            return f"⚠️ Couldn't start {t['title']}'s production deploy:\n{_tail(out, 500)}"
+        self._log(f"DEPLOY production requested ({t['name']})")
+        import score
+        score.add(self, t["name"], deploys=1)
+        self._watch(self._watch_production(started, project=t["name"]))
+        who = "" if t["name"] == self.main_name else f"{t['title']}: "
+        return f"🚀 {who}Production deploy started. I'll tell you when it's live (usually 1–3 minutes)."
 
     async def _watch_production(self, started: float, workflow: str = "deploy-production.yml",
-                                label: str = "Production") -> None:
+                                label: str = "Production", project: str | None = None) -> None:
+        t = self.deploy_target(project)
         await asyncio.sleep(5)
-        found = await self._find_run(["--workflow", workflow], created_after=started, wait_s=180)
-        run = None
-        if found:
-            run = found if found.get("status") == "completed" else await self._follow_run(found["databaseId"])
+        if t["name"] == self.main_name:
+            found = await self._find_run(["--workflow", workflow], created_after=started, wait_s=180)
+            run = None
+            if found:
+                run = found if found.get("status") == "completed" else await self._follow_run(found["databaseId"])
+        else:
+            run = await self._follow_project_run(t, workflow, started)
         if run is None:
-            await self.notify(f"⚠️ Couldn't follow the {label.lower()} run. Check the Actions tab on GitHub.")
+            await self.notify(f"⚠️ Couldn't follow the {label.lower()} run of {t['title']}. Check the Actions tab on GitHub.")
             return
-        await self.notify(self._describe_deploy(run, label))
+        if label == "Production" and run.get("conclusion") != "success":
+            import score
+            score.add(self, t["name"], deploy_failures=1)
+        await self.notify(self._describe_deploy(run, label, t))
 
-    def _describe_deploy(self, run: dict, label: str) -> str:
+    async def _follow_project_run(self, t: dict, workflow: str, started: float) -> dict | None:
+        deadline = time.time() + self.cfg.pipeline_timeout_s
+        while time.time() < deadline:
+            code, out = await self._gh_for(t["name"], "run", "list", "-R", t["repo"], "--workflow", workflow, "-L", "5",
+                                           "--json", "databaseId,status,conclusion,url,createdAt")
+            runs = [r for r in (json.loads(out) if code == 0 and out.startswith("[") else [])
+                    if _iso_ts(r["createdAt"]) >= started]
+            if runs and runs[0].get("status") == "completed":
+                return runs[0]
+            await asyncio.sleep(self.cfg.pipeline_poll_s or 1)
+        return None
+
+    def _describe_deploy(self, run: dict, label: str, t: dict | None = None) -> str:
+        t = t or self.deploy_target()
+        who = "" if t["name"] == self.main_name else f"{t['title']}: "
         if label == "Drill":
-            return (("✅ Fire drill passed: the broken version was rejected and staging was rolled back "
+            return ((f"✅ {who}Fire drill passed: the broken version was rejected and staging was rolled back "
                      "automatically.") if run["conclusion"] == "success" else
-                    f"❌ Fire drill FAILED – rollback did not behave as expected. Check: {run['url']}")
+                    f"❌ {who}Fire drill FAILED – rollback did not behave as expected. Check: {run['url']}")
         if run["conclusion"] == "success":
-            where = f"\n{self.cfg.production_url}" if self.cfg.production_url else ""
-            return f"✅ Production is live – it now runs the same version as staging.{where}"
-        return ("❌ Production deploy failed. The deploy gate restores the previous version automatically "
+            where = f"\n{t['production_url']}" if t.get("production_url") else ""
+            return f"✅ {who}Production is live – it now runs the same version as staging.{where}"
+        return (f"❌ {who}Production deploy failed. The deploy gate restores the previous version automatically "
                 f"when checks fail; the run log says exactly what happened:\n{run['url']}")
 
     # ---------------------------------------------------------------- digest

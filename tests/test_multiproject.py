@@ -166,3 +166,26 @@ def test_scorecard_counts_rounds_tasks_and_usage_per_project(make_orch, monkeypa
     assert "Carstage" in rep or "carstage" in rep.lower()
     assert "2 task(s) committed" in rep and "2 build round(s), 50% green" in rep
     assert "≈$0.21" in rep and "1500" not in rep
+
+
+def test_deploys_work_per_project(make_orch, monkeypatch):
+    o = make_orch(multi=True, pipeline_timeout_s=1)
+    add_project(o, "carstage")
+    text, can = run(o.deploy_preview("carstage"))
+    assert "isn't connected to GitHub" in text and not can
+    o.state.projects["carstage"]["repo"] = "vlad/carstage"
+    text, can = run(o.deploy_preview("carstage"))
+    assert "no staging address" in text and "/project urls carstage" in text
+    o.state.projects["carstage"].update(staging_url="https://stg.carstage.ro", production_url="https://carstage.ro")
+    monkeypatch.setattr(o, "running_version", lambda url: _ver(url))
+    text, can = run(o.deploy_preview("carstage"))
+    assert can and "Carstage: Production will get" in text and "abc1234" in text
+    monkeypatch.setattr(o, "_watch", lambda coro: coro.close())
+    msg = run(o.deploy_production("carstage"))
+    assert msg.startswith("🚀 Carstage: Production deploy started")
+    log = (o.cfg.data_dir.parent / "gh.log").read_text()
+    assert "workflow run deploy-production.yml -R vlad/carstage" in log
+
+
+async def _ver(url):
+    return {"https://stg.carstage.ro": "abc1234def", "https://carstage.ro": "0001111"}.get(url)

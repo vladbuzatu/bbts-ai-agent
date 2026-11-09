@@ -188,9 +188,11 @@ def build_app() -> Application:
         extra = f" Cleaned up {killed} leftover process(es)." if killed else ""
         await send(app, ("⏹ Stopped." if stopped else "Nothing was running.") + extra)
 
-    async def deploy_preview():
-        text, can = await orch.deploy_preview()
-        await send(app, text, buttons=[[("✅ Deploy now", "deploy:yes"), ("✖️ Cancel", "deploy:no")]] if can else None)
+    async def deploy_preview(project: str | None = None):
+        project = project or orch.state.active_project or orch.main_name
+        text, can = await orch.deploy_preview(project)
+        await send(app, text, buttons=[[("✅ Deploy now", f"deploy:yes:{project}"), ("✖️ Cancel", "deploy:no")]]
+                   if can else None)
 
     async def send_screens(which: str = ""):
         files = extras.screenshots(orch, which)
@@ -325,15 +327,18 @@ def build_app() -> Application:
 
     @owner_only
     async def on_deploy(update: Update, context: ContextTypes.DEFAULT_TYPE):
-        arg = context.args[0].lower() if context.args else ""
+        args = [a.lower() for a in (context.args or [])]
+        project = next((a for a in args if a in orch.project_names()), None) or \
+            (orch.state.active_project or orch.main_name)
+        arg = next((a for a in args if a not in orch.project_names()), "")
         if arg in ("yes", "confirm", "y"):
-            await send(app, await orch.deploy_production())
+            await send(app, await orch.deploy_production(project))
         elif arg == "drill":
-            await send(app, await orch.deploy_drill())
+            await send(app, await orch.deploy_drill(project))
         elif arg == "history":
-            await send(app, await orch.deploy_history())
+            await send(app, await orch.deploy_history(project))
         else:
-            await deploy_preview()
+            await deploy_preview(project)
 
     @owner_only
     async def on_preview(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -477,6 +482,26 @@ def build_app() -> Application:
             await send(app, f"OK: {name} now ships via " + ("pull requests from feature branches." if mode == "pr"
                                                            else "pushes to main (CI → staging)."))
             return
+        if sub == "urls":
+            if len(context.args) < 3 or context.args[1].lower() not in orch.project_names():
+                await send(app, "Usage: /project urls <name> <staging-url> [production-url]")
+                return
+            name = context.args[1].lower()
+            if name == orch.main_name:
+                await send(app, "The main project's addresses are STAGING_URL / PRODUCTION_URL in .env.")
+                return
+            urls = [u for u in context.args[2:4] if u.startswith("https://")]
+            if not urls:
+                await send(app, "Addresses must start with https://")
+                return
+            info = orch.state.projects[name]
+            info["staging_url"] = urls[0]
+            if len(urls) > 1:
+                info["production_url"] = urls[1]
+            orch._save_state()
+            await send(app, f"OK: {name} staging {urls[0]}" + (f", production {urls[1]}" if len(urls) > 1 else "")
+                       + f". /deploy {name} shows what would go live.")
+            return
         if sub in ("link", "push", "pull"):
             if len(context.args) < 2 or (sub == "link" and len(context.args) < 3):
                 await send(app, "Usage:\n/project link <name> <owner/repo>\n/project push <name>\n/project pull <name>")
@@ -513,6 +538,7 @@ def build_app() -> Application:
                    "/project push &lt;name&gt; publishes the agents' work as a pull request\n"
                    "/project pull &lt;name&gt; brings GitHub's main into the agents' copy\n"
                    "/project mode &lt;name&gt; pr|main sets how its work ships\n"
+                   "/project urls &lt;name&gt; &lt;staging&gt; [production] for /deploy &lt;name&gt;\n"
                    "/build [names] builds every project with open tasks, or only those named", html_mode=True)
 
     @owner_only
@@ -709,8 +735,9 @@ def build_app() -> Application:
             await send_screens(data.split(":", 1)[1] if ":" in data else "")
         elif data == "deploy:preview":
             await deploy_preview()
-        elif data == "deploy:yes":
-            await send(app, await orch.deploy_production())
+        elif data.startswith("deploy:yes"):
+            project = data.split(":", 2)[2] if data.count(":") == 2 else None
+            await send(app, await orch.deploy_production(project))
         elif data == "deploy:no":
             await send(app, "OK, production stays as it is.")
         elif data.startswith("learn:"):
