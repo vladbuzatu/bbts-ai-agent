@@ -49,7 +49,7 @@ COMMANDS = [
     ("stop", "Stop whatever is running"),
     ("today", "Today's progress (also sent each evening)"),
     ("changes", "What changed since you last looked"),
-    ("screens", "Latest screenshots of the app and mockups"),
+    ("screens", "Screenshots · /screens diff · /screens accept"),
     ("ask", "Ask one specialist a question (read-only)"),
     ("undo", "Undo the last finished task"),
     ("preview", "Run the app on the server to try it"),
@@ -379,7 +379,22 @@ def build_app() -> Application:
 
     @owner_only
     async def on_screens(update: Update, context: ContextTypes.DEFAULT_TYPE):
-        await send_screens(context.args[0].lower() if context.args else "")
+        args = [a.lower() for a in (context.args or [])]
+        if args and args[0] in ("diff", "accept"):
+            project = args[1] if len(args) > 1 and args[1] in orch.project_names() else \
+                (orch.state.active_project or orch.main_name)
+            if args[0] == "accept":
+                n = orch.visual.accept_baseline(project)
+                await send(app, f"✅ {n} screen(s) of {project} are now the approved look.")
+                return
+            text = await asyncio.to_thread(orch.visual.summary, project)
+            if not text:
+                await send(app, f"No visual changes in {project} vs the approved screens.")
+                return
+            await send(app, text + f"\n\n/screens accept {project} approves the new look.")
+            await orch.visual.send_diffs(project)
+            return
+        await send_screens(args[0] if args else "")
 
     @owner_only
     async def on_server(update: Update, context: ContextTypes.DEFAULT_TYPE):

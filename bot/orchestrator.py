@@ -264,6 +264,8 @@ class Orchestrator:
         self.repos = ProjectRepos(self)
         from prs import PullRequests
         self.prs = PullRequests(self)
+        from visual import Visual
+        self.visual = Visual(self)
         self.studio.lab.before_run = self.repos.refresh_lab          # the lab follows GitHub main
         self.studio.lab.code_version = lambda: self.state.lab_code
         sandbox.give_to_agent(self.cfg.master, self.cfg.studio_dir)
@@ -895,6 +897,13 @@ class Orchestrator:
                             note = await self._publish(n)
                             if note:
                                 published.append(note if not self.cfg.multi else f"{n}: {note}")
+                        try:
+                            vis = await asyncio.to_thread(self.visual.summary, n)
+                        except Exception as e:      # never let a screenshot problem break the round
+                            vis = ""
+                            self._log(f"VISUAL failed for {n}: {e!r}")
+                        if vis:
+                            published.append(vis)
                 if self.cfg.multi:
                     badge = " · ".join(f"{'✅' if good else '❌'} {n}" for n, good in results.items()) or "no project changed"
                 else:

@@ -4,3 +4,4 @@ claude-agent-sdk==0.2.172
 python-telegram-bot==22.8
 tzdata==2026.6
 pytest==9.2.0
+pillow==13.0.0
