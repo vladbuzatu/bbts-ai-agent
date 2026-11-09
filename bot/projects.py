@@ -259,12 +259,29 @@ class ProjectRepos:
         code, diff = await self._x(name, "git", "-C", m, "diff", "--no-color", "-U0", f"{base}...{target}")
         added = "\n".join(line[1:] for line in diff.splitlines() if line.startswith("+") and not line.startswith("+++"))
         found = set(SECRET_RE.findall(added))
+        found |= await self._gitleaks(name, m, base, target)
         new = []
         for value in sorted(found):
             code, _ = await self._x(name, "git", "-C", m, "grep", "-q", "-F", value, base)
             if code != 0:                       # not anywhere on the base branch: really new
                 new.append(value[:12] + "…")
         return new
+
+    async def _gitleaks(self, name: str, m: str, base: str, target: str) -> set[str]:
+        """gitleaks' rules (hundreds of key formats) over the new commits, when it's installed."""
+        if not shutil.which("gitleaks"):
+            return set()
+        import json as _json
+        report = self.o.cfg.data_dir / f"gitleaks-{name}.json"
+        try:
+            await self._x(name, "gitleaks", "git", m, "--log-opts", f"{base}..{target}", "--no-banner",
+                          "--report-format", "json", "--report-path", str(report), "--exit-code", "0", timeout=300)
+            findings = _json.loads(report.read_text()) if report.exists() else []
+        except (OSError, ValueError):
+            return set()
+        finally:
+            report.unlink(missing_ok=True)
+        return {f.get("Secret", "") for f in findings if len(f.get("Secret", "")) >= 8}
 
     # ------------------------------------------------------------------ pull
     async def pull(self, name: str) -> str:

@@ -1,0 +1,18 @@
+# Secret scanning (scripts/verify.sh runs `gitleaks dir`). Uses gitleaks' default rules.
+# A value that is public by design (e.g. a browser-restricted Maps key) goes in .gitleaksignore as its
+# fingerprint, with a comment saying why it's safe. Never allowlist a real secret: move it to .env.
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Installed dependencies, build output and caches (not our code)"
+paths = [
+  '''(^|/)node_modules/''',
+  '''(^|/)\.venv/''',
+  '''(^|/)venv/''',
+  '''(^|/)dist/''',
+  '''(^|/)\.angular/''',
+  '''(^|/)__pycache__/''',
+  '''(^|/)\.git/''',
+  '''package-lock\.json$''',
+]

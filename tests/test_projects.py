@@ -135,3 +135,20 @@ def test_secret_check_ignores_keys_already_on_main(make_orch, remote, tmp_path):
     sh("git", "add", "-A", cwd=folder)
     sh("git", "-c", "user.email=a@b", "-c", "user.name=a", "commit", "-qm", "oops", cwd=folder)
     assert run(o.repos.publish("carstage")).startswith("⛔ Not pushed")      # a new key: blocked
+
+
+def test_gitleaks_catches_formats_the_regex_misses(make_orch, remote, tmp_path):
+    import shutil as _sh
+    if not _sh.which("gitleaks"):
+        pytest.skip("gitleaks not installed")
+    o = make_orch()
+    o.cfg.github_token = "t"
+    run(o.repos.link("carstage", "vlad/carstage"))
+    folder = o.cfg.workspace / "carstage"
+    sh("git", "switch", "-q", "-c", "feature/x", cwd=folder)
+    # a Stripe live key: not in the bot's own regex, but gitleaks knows the format
+    fake = "sk_" + "live_" + "51NqX7eKzP3mT8vR2yW9aB4cD6fG1hJ0kL5nM7pQ3sT"     # built at runtime: not a real key
+    (folder / "pay.py").write_text(f'STRIPE = "{fake}"\n')
+    sh("git", "add", "-A", cwd=folder)
+    sh("git", "-c", "user.email=a@b", "-c", "user.name=a", "commit", "-qm", "pay", cwd=folder)
+    assert run(o.repos.publish("carstage")).startswith("⛔ Not pushed")

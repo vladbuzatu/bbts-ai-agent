@@ -111,3 +111,30 @@ def test_bot_request_is_picked_up(kit, monkeypatch):
     r = sh("bash", "ops/update-from-request.sh", cwd=server, env=dict(env, FAKE_DOCKER_HEALTH="healthy"), check=False)
     assert r.returncode == 0 and not (control / "update-request").exists() and (server / "NEW").exists()
     assert any("Kit version" in line for line in hostctl.summary_lines())
+
+
+def test_backup_keeps_7_days_plus_recent_sundays(tmp_path):
+    import datetime as dt
+    root = tmp_path / "backups"
+    today = dt.date.today()
+    days = [today - dt.timedelta(days=i) for i in range(1, 40)]
+    for d in days:
+        (root / d.isoformat()).mkdir(parents=True)
+    kitdir = tmp_path / "kit"
+    shutil.copytree(KIT / "ops", kitdir / "ops")
+    (kitdir / ".env").write_text("TELEGRAM_BOT_TOKEN=\n")
+    control = tmp_path / "control"
+    control.mkdir()
+    script = (kitdir / "ops" / "backup.sh").read_text().replace("/var/lib/bbts/control", str(control))
+    (kitdir / "ops" / "backup.sh").write_text(script)
+    env = dict(os.environ, PATH=f"{FAKES}:{os.environ['PATH']}", BACKUP_DIR=str(root))
+    r = sh("bash", str(kitdir / "ops" / "backup.sh"), env=env, check=False)
+    kept = sorted(p.name for p in root.iterdir())
+    newest = sorted(kept, reverse=True)[:7]
+    assert today.isoformat() in newest                       # tonight's backup exists
+    for name in kept:
+        d = dt.date.fromisoformat(name)
+        assert name in newest or (d.isoweekday() == 7 and (today - d).days <= 28), name
+    st = json.loads((control / "backup-status.json").read_text())
+    assert st["day"] == today.isoformat()
+    assert (root / today.isoformat() / "env").exists()

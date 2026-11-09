@@ -247,6 +247,14 @@ class Orchestrator:
             self._save_state()
         layout.init_master(self)
         self._register_main_project()
+        self._announce_once("security-scanners-v1",
+            "New team standard: every project's scripts/verify.sh also runs the security scanners now installed "
+            "on the server: `gitleaks dir . --no-banner --redact --config .gitleaks.toml` (secrets), `pip-audit -r "
+            "backend/requirements.txt` and `npm audit --omit=dev --audit-level=high` (vulnerable dependencies), "
+            "each as its own '::: security: …' section. Copy the section and .gitleaks.toml from the template "
+            "(/app/workspace-template/scripts/verify.sh and /app/workspace-template/.gitleaks.toml are readable). "
+            "A value that's public by design (a browser-restricted Maps key) goes in .gitleaksignore with its "
+            "fingerprint and a comment why. Add this as a task in each project's board.")
         from curator import Curator
         self.curator = Curator(self)
         from studio import Studio
@@ -527,6 +535,15 @@ class Orchestrator:
             max_turns=self.cfg.max_turns_per_round,
             model=self.cfg.model,
         )
+
+    def _announce_once(self, key: str, text: str) -> None:
+        """Queue a one-time note for the PM (e.g. a new team standard after an update)."""
+        marker = self.cfg.data_dir / f"announced-{key}"
+        if marker.exists():
+            return
+        self.state.inbox.append(text)
+        self._save_state()
+        marker.write_text("done\n")
 
     # ------------------------------------------------------------ projects
     @property
