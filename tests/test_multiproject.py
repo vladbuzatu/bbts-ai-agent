@@ -145,3 +145,24 @@ def test_feature_branch_is_published_as_a_pull_request(make_orch, tmp_path, monk
     assert sh("git", "--git-dir", str(bare), "log", "--format=%s", "-1", "feature/D-04-editor") == "D-04: editor"
     assert sh("git", "--git-dir", str(bare), "log", "--format=%s", "-1", "main") == "init"
     assert "carstage" in o.projects_brief() and "pull" in o.projects_brief()
+
+
+def test_scorecard_counts_rounds_tasks_and_usage_per_project(make_orch, monkeypatch):
+    import score
+    from conftest import result
+    o = make_orch(multi=True, max_rounds=1)
+    cs = add_project(o, "carstage")
+    (cs / "a.ts").write_text("x")
+    commit_all(cs, "D-04: editor")
+    (cs / "b.ts").write_text("y")
+    commit_all(cs, "D-05: plans page")
+    msg = result("done")
+    msg.usage = {"input_tokens": 1000, "output_tokens": 500}
+    msg.total_cost_usd = 0.42
+    msg.duration_ms = 120000
+    score.record_turn(o, ["carstage", "app"], msg)
+    score.add(o, "carstage", rounds=2, red=1)
+    rep = score.report(o, 7)
+    assert "Carstage" in rep or "carstage" in rep.lower()
+    assert "2 task(s) committed" in rep and "2 build round(s), 50% green" in rep
+    assert "≈$0.21" in rep and "1500" not in rep

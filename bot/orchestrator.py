@@ -194,6 +194,8 @@ class State:
     active_project: str | None = None               # what /status shows; None = the main project
     lab_code: dict = field(default_factory=dict)    # which code the CarStage lab runs (source, sha, when)
     prs: dict = field(default_factory=dict)         # pull requests the bot opened (see prs.py)
+    score: dict = field(default_factory=dict)       # per day, per project counters (see score.py)
+    last_scorecard: str | None = None
 
 
 class Orchestrator:
@@ -214,6 +216,7 @@ class Orchestrator:
         self.state = self._load_state()
         self.watchers: set[asyncio.Task] = set()
         self.preview_procs: dict[str, asyncio.subprocess.Process] = {}
+        self._usage_scope: list[str] | None = None     # which projects the running turn works on
         import layout
         layout.migrate_to_master(self)
         self._init_workspace()
@@ -755,6 +758,13 @@ class Orchestrator:
                 elif isinstance(msg, ResultMessage):
                     if msg.session_id:
                         t.set_sid(msg.session_id)
+                    try:
+                        import score
+                        who = (self._usage_scope or [self.state.active_project or self.main_name]) \
+                            if t.label == "PM" else ["studio"]
+                        score.record_turn(self, who, msg)
+                    except Exception as e:      # accounting must never break a turn
+                        self._log(f"SCORE failed: {e!r}")
                     final = msg.result or last_text
                     ok = not msg.is_error
                     self._log(f"RESULT ok={ok} turns={msg.num_turns} subtype={msg.subtype}")
@@ -877,7 +887,11 @@ class Orchestrator:
                 async with self.ops.run(f"build round {rnd}" + (f" · {', '.join(scope)}" if self.cfg.multi else "")):
                     self.current_turn = asyncio.current_task()
                     before = {n: self._project_head(n) for n in scope}
-                    reply, ok = await self._run_turn(prompt)
+                    self._usage_scope = list(scope)
+                    try:
+                        reply, ok = await self._run_turn(prompt)
+                    finally:
+                        self._usage_scope = None
                     self.current_turn = None
                     self.state.rounds_done += 1
                     results: dict[str, bool] = {}
@@ -889,6 +903,9 @@ class Orchestrator:
                             results[n], _ = await self.verify(project=n)
                     failing = {n: (self.state.projects.get(n, {}).get("last_verify") or self.state.last_verify)
                                for n, good in results.items() if not good}
+                    import score
+                    for n in scope:
+                        score.add(self, n, rounds=1, red=0 if results.get(n, True) else 1)
                     verify_ok = not failing
                     self._record_round(verify_ok)
                     published = []
@@ -1227,6 +1244,22 @@ class Orchestrator:
                 f"when checks fail; the run log says exactly what happened:\n{run['url']}")
 
     # ---------------------------------------------------------------- digest
+    def scorecard_due(self) -> bool:
+        """Mondays at the digest time (or SCORECARD_DAY), once."""
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+        now = datetime.now(ZoneInfo(self.cfg.timezone))
+        day = os.environ.get("SCORECARD_DAY", "mon").lower()[:3]
+        if now.strftime("%a").lower() != day or now.strftime("%H:%M") < self.cfg.digest_time:
+            return False
+        return self.state.last_scorecard != now.date().isoformat()
+
+    def mark_scorecard_sent(self) -> None:
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+        self.state.last_scorecard = datetime.now(ZoneInfo(self.cfg.timezone)).date().isoformat()
+        self._save_state()
+
     def digest_due(self) -> bool:
         from datetime import datetime
         from zoneinfo import ZoneInfo

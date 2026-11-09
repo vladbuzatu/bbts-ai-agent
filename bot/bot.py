@@ -31,6 +31,7 @@ from telegram.ext import (  # noqa: E402
 
 import extras  # noqa: E402
 import hostctl  # noqa: E402
+import score  # noqa: E402
 import lab as lab_mod  # noqa: E402
 from orchestrator import Config, Orchestrator  # noqa: E402
 
@@ -65,6 +66,7 @@ COMMANDS = [
     ("project", "Which project /status shows: /project <name>"),
     ("lab", "CarStage lab: what's running · spend · sync code"),
     ("update", "Update the agent team to the latest version"),
+    ("score", "Scorecard per project: /score [days]"),
     ("learn", "Knowledge curator proposals"),
     ("live", "Pin a live, self-updating status message"),
     ("log", "Last steps the agents took"),
@@ -432,6 +434,11 @@ def build_app() -> Application:
         await send(app, orch.studio.jobs_text())
 
     @owner_only
+    async def on_score(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        days = int(context.args[0]) if context.args and context.args[0].isdigit() else 7
+        await send(app, score.report(orch, max(1, min(days, 90))), html_mode=True)
+
+    @owner_only
     async def on_update(update: Update, context: ContextTypes.DEFAULT_TYPE):
         arg = (context.args[0] if context.args else "").strip()
         if arg:
@@ -769,6 +776,9 @@ def build_app() -> Application:
                 live["was_building"] = building
 
                 await orch.prs.poll()
+                if orch.scorecard_due():
+                    await send(app, score.report(orch, 7), html_mode=True)
+                    orch.mark_scorecard_sent()
                 if orch.digest_due():
                     text, happened = extras.today(orch)
                     if happened:
@@ -784,7 +794,7 @@ def build_app() -> Application:
                 "preview": on_preview, "learn": on_learn, "agents": on_agents, "run": on_run, "jobs": on_jobs,
                 "job": on_job, "pm": on_pm, "today": on_today, "changes": on_changes, "screens": on_screens,
                 "server": on_server, "undo": on_undo, "ask": on_ask, "live": on_live, "lab": on_lab, "project": on_project,
-                "update": on_update}
+                "update": on_update, "score": on_score}
     for name, fn in handlers.items():
         app.add_handler(CommandHandler(name, fn))
     app.add_handler(CallbackQueryHandler(on_button))
