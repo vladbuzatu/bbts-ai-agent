@@ -7,6 +7,7 @@ Run on a laptop:            cd agent-team-kit && pytest -q tests
 from __future__ import annotations
 
 import asyncio
+import shutil
 import os
 import subprocess
 import sys
@@ -31,7 +32,31 @@ from claude_agent_sdk import RateLimitEvent, ResultMessage, SystemMessage  # noq
 
 
 def run(coro):
-    return asyncio.run(coro)
+    """asyncio.run, but background tasks the code started (e.g. pipeline watchers) get to finish first.
+    Python 3.12's asyncio hangs if the loop is closed while such a task is starting a subprocess."""
+    async def wrapped():
+        try:
+            return await coro
+        finally:
+            others = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
+            if others:
+                await asyncio.wait(others, timeout=15)
+    return asyncio.run(wrapped())
+
+
+@pytest.fixture(autouse=True)
+def isolated_git(monkeypatch):
+    """Tests never touch the real machine's git config or credentials (readable by the agent user too)."""
+    d = Path(tempfile.mkdtemp(prefix="kit-gitcfg-"))
+    cfg = d / "gitconfig"
+    cfg.write_text("[safe]\n\tdirectory = *\n[user]\n\tname = Test\n\temail = test@example.com\n"
+                   "[init]\n\tdefaultBranch = main\n")
+    os.chmod(d, 0o755)
+    os.chmod(cfg, 0o644)
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(cfg))
+    monkeypatch.setenv("BBTS_GIT_CREDENTIALS", str(d / "credentials"))
+    yield
+    shutil.rmtree(d, ignore_errors=True)
 
 
 @pytest.fixture
@@ -40,7 +65,7 @@ def base():
     d = Path(tempfile.mkdtemp(prefix="kit-test-"))
     os.chmod(d, 0o755)
     yield d
-    subprocess.run(["rm", "-rf", str(d)], check=False)
+    shutil.rmtree(d, ignore_errors=True)
 
 
 class Recorder:

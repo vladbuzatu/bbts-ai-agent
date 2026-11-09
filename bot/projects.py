@@ -47,7 +47,7 @@ class ProjectRepos:
 
     def write_credentials(self) -> None:
         """git credentials per repository (so each repo can have its own token)."""
-        cred = Path.home() / ".git-credentials"
+        cred = Path(os.environ.get("BBTS_GIT_CREDENTIALS") or (Path.home() / ".git-credentials"))
         lines = []
         repos = {}
         if self.o.cfg.github_repo:
@@ -63,7 +63,7 @@ class ProjectRepos:
         cred.write_text("\n".join(lines) + "\n")
         cred.chmod(0o600)
         import subprocess
-        subprocess.run(["git", "config", "--global", "credential.helper", "store"], check=False)
+        subprocess.run(["git", "config", "--global", "credential.helper", f"store --file={cred}"], check=False)
         subprocess.run(["git", "config", "--global", "credential.useHttpPath", "true"], check=False)
 
     def mirror(self, name: str) -> Path:
