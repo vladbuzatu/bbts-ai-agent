@@ -234,6 +234,9 @@ def build_app() -> Application:
     # ----------------------------------------------------------------- commands
     @owner_only
     async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        if orch.prs.awaiting_feedback:
+            await send(app, await orch.prs.feedback(update.message.text))
+            return
         job = orch.studio.active_job()
         if job:
             r = await orch.studio.message(update.message.text)
@@ -645,7 +648,7 @@ def build_app() -> Application:
         await send(app, HELP)
 
     # ------------------------------------------------------------------ buttons
-    ONE_SHOT = ("update:go", "labsync:", "deploy:", "undo:", "learn:approve", "learn:reject", "pm:defaults", "job:defaults", "job:end")
+    ONE_SHOT = ("pr:merge", "pr:close", "update:go", "labsync:", "deploy:", "undo:", "learn:approve", "learn:reject", "pm:defaults", "job:defaults", "job:end")
 
     @owner_only
     async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -682,6 +685,14 @@ def build_app() -> Application:
             await send(app, r or "👍 Passed to the job.")
         elif data.startswith("job:"):
             await job_action(data.split(":", 1)[1])
+        elif data.startswith("pr:"):
+            _, action, key = data.split(":", 2)
+            if action == "merge":
+                await send(app, await with_typing(app, orch.prs.merge(key)))
+            elif action == "close":
+                await send(app, await orch.prs.close(key))
+            elif action == "changes":
+                await send(app, orch.prs.ask_feedback(key))
         elif data == "update:go":
             await send(app, hostctl.request_update("main"))
         elif data == "update:check":
@@ -742,6 +753,7 @@ def build_app() -> Application:
                     await refresh_live()        # final state after the build stops
                 live["was_building"] = building
 
+                await orch.prs.poll()
                 if orch.digest_due():
                     text, happened = extras.today(orch)
                     if happened:

@@ -193,6 +193,7 @@ class State:
     projects: dict = field(default_factory=dict)    # other projects in the workspace: name -> {path, title}
     active_project: str | None = None               # what /status shows; None = the main project
     lab_code: dict = field(default_factory=dict)    # which code the CarStage lab runs (source, sha, when)
+    prs: dict = field(default_factory=dict)         # pull requests the bot opened (see prs.py)
 
 
 class Orchestrator:
@@ -261,6 +262,8 @@ class Orchestrator:
         tpl = self.cfg.studio_template or (Path(__file__).resolve().parent.parent / "studio-template")
         self.studio = Studio(self, self.cfg.studio_dir, tpl, send_file)
         self.repos = ProjectRepos(self)
+        from prs import PullRequests
+        self.prs = PullRequests(self)
         self.studio.lab.before_run = self.repos.refresh_lab          # the lab follows GitHub main
         self.studio.lab.code_version = lambda: self.state.lab_code
         sandbox.give_to_agent(self.cfg.master, self.cfg.studio_dir)

@@ -251,6 +251,10 @@ class ProjectRepos:
                 return f"⬆️ Pushed {target}, but couldn't open the pull request: {out[-300:]}"
         self.o._log(f"PROJECT PUSH {name} -> {repo}:{target} ({ahead.strip()} commits)")
         extra = f" ({uncommitted} uncommitted change(s) not included.)" if uncommitted else ""
+        try:
+            await self.o.prs.opened(name, url, target, ahead.strip(), title)
+        except Exception as e:      # the push worked; a card problem must not hide that
+            self.o._log(f"PR card failed: {e!r}")
         return f"⬆️ {ahead.strip()} commit(s) on {target}. Review and merge: {url}{extra}"
 
     async def _new_secrets(self, name: str, m: str, base: str, target: str) -> list[str]:

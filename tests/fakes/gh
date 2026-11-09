@@ -10,6 +10,11 @@ case "$*" in
   *"run view"*"--log-failed"*) echo "${FAKE_GH_FAILLOG:-build failed: ModuleNotFoundError: No module named 'whitenoise'}"; exit 0 ;;
   *"run view"*) echo "{\"databaseId\":77,\"status\":\"completed\",\"conclusion\":\"$R\",\"url\":\"https://github.example/run/77\",\"headSha\":\"abc1234def\"}"; exit 0 ;;
   *"pr list"*) exit 0 ;;
+  *"pr view"*"state,comments,reviews"*)
+    if [ -n "${FAKE_GH_PR_ACTIVITY:-}" ]; then echo "$FAKE_GH_PR_ACTIVITY"; else echo '{"state":"OPEN","comments":[],"reviews":[]}'; fi
+    exit 0 ;;
+  *"pr view"*) echo '{"title":"D-04 editor","additions":120,"deletions":8,"changedFiles":3,"files":[{"path":"src/app/editor.ts"}]}'; exit 0 ;;
+  *"pr merge"*|*"pr close"*|*"pr comment"*) exit 0 ;;
   *"pr create"*) echo "https://github.example/pull/7"; exit 0 ;;
   *"run list"*) echo "[{\"databaseId\":77,\"status\":\"in_progress\",\"conclusion\":\"\",\"url\":\"https://github.example/run/77\",\"headSha\":\"abc1234def\",\"createdAt\":\"2099-01-01T00:00:00Z\",\"event\":\"push\",\"displayTitle\":\"T-05: import\"}]"; exit 0 ;;
 esac
