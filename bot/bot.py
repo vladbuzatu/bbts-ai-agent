@@ -30,6 +30,7 @@ from telegram.ext import (  # noqa: E402
 )
 
 import extras  # noqa: E402
+import hostctl  # noqa: E402
 import lab as lab_mod  # noqa: E402
 from orchestrator import Config, Orchestrator  # noqa: E402
 
@@ -63,6 +64,7 @@ COMMANDS = [
     ("pm", "Talk to the Project Manager again"),
     ("project", "Which project /status shows: /project <name>"),
     ("lab", "CarStage lab: what's running · spend · sync code"),
+    ("update", "Update the agent team to the latest version"),
     ("learn", "Knowledge curator proposals"),
     ("live", "Pin a live, self-updating status message"),
     ("log", "Last steps the agents took"),
@@ -412,6 +414,18 @@ def build_app() -> Application:
         await send(app, orch.studio.jobs_text())
 
     @owner_only
+    async def on_update(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        arg = (context.args[0] if context.args else "").strip()
+        if arg:
+            await send(app, hostctl.request_update(arg))
+            return
+        lines = hostctl.summary_lines()
+        busy = orch.ops.busy() or ("A studio job is working." if orch.studio.busy else None)
+        note = f"\n\n⚠️ {busy} Updating restarts the bot and stops it." if busy else ""
+        await send(app, "\n".join(lines) + note + "\n\n/update check · /update <branch|commit>",
+                   buttons=[[("⬆️ Update now", "update:go"), ("🔎 Check", "update:check")]])
+
+    @owner_only
     async def on_project(update: Update, context: ContextTypes.DEFAULT_TYPE):
         sub = context.args[0].lower() if context.args else ""
         if sub == "mode":
@@ -631,7 +645,7 @@ def build_app() -> Application:
         await send(app, HELP)
 
     # ------------------------------------------------------------------ buttons
-    ONE_SHOT = ("labsync:", "deploy:", "undo:", "learn:approve", "learn:reject", "pm:defaults", "job:defaults", "job:end")
+    ONE_SHOT = ("update:go", "labsync:", "deploy:", "undo:", "learn:approve", "learn:reject", "pm:defaults", "job:defaults", "job:end")
 
     @owner_only
     async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -668,6 +682,10 @@ def build_app() -> Application:
             await send(app, r or "👍 Passed to the job.")
         elif data.startswith("job:"):
             await job_action(data.split(":", 1)[1])
+        elif data == "update:go":
+            await send(app, hostctl.request_update("main"))
+        elif data == "update:check":
+            await send(app, hostctl.request_update("check"))
         elif data == "labsync:yes":
             await lab_sync(apply=True)
         elif data == "labsync:no":
@@ -711,6 +729,7 @@ def build_app() -> Application:
 
     async def background_loop():
         while True:
+            hostctl.heartbeat()
             try:
                 building = bool(orch.build_task and not orch.build_task.done())
                 if building and not live["was_building"]:
@@ -737,7 +756,8 @@ def build_app() -> Application:
                 "verify": on_verify, "log": on_log, "reset": on_reset, "push": on_push, "deploy": on_deploy,
                 "preview": on_preview, "learn": on_learn, "agents": on_agents, "run": on_run, "jobs": on_jobs,
                 "job": on_job, "pm": on_pm, "today": on_today, "changes": on_changes, "screens": on_screens,
-                "server": on_server, "undo": on_undo, "ask": on_ask, "live": on_live, "lab": on_lab, "project": on_project}
+                "server": on_server, "undo": on_undo, "ask": on_ask, "live": on_live, "lab": on_lab, "project": on_project,
+                "update": on_update}
     for name, fn in handlers.items():
         app.add_handler(CommandHandler(name, fn))
     app.add_handler(CallbackQueryHandler(on_button))

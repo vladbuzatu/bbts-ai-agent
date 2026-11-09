@@ -3,7 +3,7 @@
 # Run by the agents, and independently by the bot after every build round.
 # Sections are skipped until the corresponding folder exists.
 set -uo pipefail
-cd "$(dirname "$0")/.."
+cd "$(dirname "$0")/.." || exit 1
 
 FAILED=()
 run() {  # run <name> <command...>

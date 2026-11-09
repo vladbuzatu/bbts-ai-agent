@@ -32,7 +32,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && pip install --no-cache-dir weasyprint
 
 # Python tooling the backend agent uses
-RUN pip install --no-cache-dir ruff pytest pytest-django
+RUN pip install --no-cache-dir ruff pytest pytest-django pip-audit
+
+# Secret scanner for the projects' tests (scripts/verify.sh) and the bot's publish check.
+ARG GITLEAKS_VERSION=8.30.1
+RUN curl -fsSL "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" \
+      | tar -xz -C /usr/local/bin gitleaks && gitleaks version
 
 # CarStage Model Lab (studio agent "model-lab"): its own Python environment for the CarStage
 # pipelines, run as the separate user "lab". Build with --build-arg CARSTAGE_LAB=0 to skip (~1 GB).

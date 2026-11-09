@@ -44,7 +44,9 @@ cp "$KIT_DIR/.env" "$DEST/env" 2>/dev/null && chmod 600 "$DEST/env"
 size=$(du -sh "$DEST" | cut -f1)
 
 # Retention: the 7 newest days + Sundays from the last 4 weeks.
-mapfile -t days < <(ls -1 "$ROOT" | grep -E '^[0-9]{4}-[0-9]{2}-[0-9]{2}$' | sort -r)
+days=()
+for d in "$ROOT"/[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]; do [ -d "$d" ] && days+=("$(basename "$d")"); done
+mapfile -t days < <(printf '%s\n' "${days[@]}" | sort -r)
 for i in "${!days[@]}"; do
   d=${days[$i]}
   [ "$i" -lt 7 ] && continue

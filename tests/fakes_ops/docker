@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# Fake docker for the bot's and the ops scripts' tests. Behaviour via env:
+#   FAKE_DOCKER_LOG     file to append calls to
+#   FAKE_DOCKER_HEALTH  healthy | unhealthy   (container health for ops/update.sh)
+#   FAKE_DOCKER_BUILD   ok | fail
+#   FAKE_DOCKER_FAIL    substring: any call containing it exits 1 (deploy-gate tests)
+echo "docker $*" >> "${FAKE_DOCKER_LOG:-/dev/null}"
+if [ -n "${FAKE_DOCKER_FAIL:-}" ] && [[ "$*" == *"$FAKE_DOCKER_FAIL"* ]]; then exit 1; fi
+case "$*" in
+  *"compose build"*) [ "${FAKE_DOCKER_BUILD:-ok}" = ok ] || exit 1 ;;
+  *"inspect --format {{.State.Health.Status}}"*) echo "${FAKE_DOCKER_HEALTH:-healthy}" ;;
+  *"image inspect"*) exit 0 ;;
+esac
+exit 0

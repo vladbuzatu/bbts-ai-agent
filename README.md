@@ -184,6 +184,38 @@ agents ask), `brand/logo.*` (send your logo on Telegram with the caption "logo")
 and `jobs/<id>/{input,research,mockups,output}`. PDFs are made with WeasyPrint, and the
 agents check every page visually before sending.
 
+## Updates, self-healing and backups (host services)
+
+The kit lives in its own GitHub repo. On the server it's a git clone; `.env` stays next to it (never in git).
+
+**One-time move from a zip folder to the repo** (as root on the server):
+```bash
+TOKEN=$(grep ^GITHUB_TOKEN= ~/agent-team-kit/.env | cut -d= -f2-)   # needs Contents: read on the kit repo
+git config --global credential.helper store && git config --global credential.useHttpPath true
+echo "https://x-access-token:${TOKEN}@github.com/vladbuzatu/bbts-ai-agent.git" >> ~/.git-credentials
+git clone https://github.com/vladbuzatu/bbts-ai-agent.git ~/bbts-ai-agent
+cp ~/agent-team-kit/.env ~/bbts-ai-agent/.env
+cd ~/bbts-ai-agent && docker compose up -d --build      # same volumes: the project name is fixed
+sudo ops/install.sh                                      # updates, watchdog, backups
+```
+
+**Updating:** `/update` in Telegram (or `sudo ops/update.sh`). It keeps `.env`, builds the new version,
+waits for the bot's health check and **rolls back by itself** if the new version doesn't come up.
+`/server` shows the version and whether an update is available (checked hourly).
+
+**Watchdog** (every 2 min): restarts the agent team or the HTTPS proxy if they stopped, puts staging/
+production back on the proxy network (the "502" problem), warns about low memory, out-of-memory kills
+and a full disk. It tells you on Telegram what it fixed.
+
+**Backups** (nightly 03:40, `/var/backups/bbts/<date>`): projects and team, bot state, studio, agent
+history, `/opt/app` + `/opt/carstage`, Postgres dumps of staging/production, `.env`. 7 daily + 4 weekly.
+Off-site copy: install `rclone`, configure a remote, set `BACKUP_REMOTE=remote:bucket/bbts` in `.env`.
+Restore: `sudo ops/restore.sh` lists backups; `sudo ops/restore.sh 2026-11-09 workspace` restores one
+part (the current state is saved first). DigitalOcean's weekly droplet backups are a good extra layer.
+
+**The kit's CI** (`.github/workflows/ci.yml`) builds the image and runs all tests *inside it*, plus a
+start-up smoke test and lint, on every push. Update when it's green.
+
 ## Several projects (master folder)
 
 `/workspace` is the team's master folder: the agents, playbooks, `docs/LESSONS.md` and

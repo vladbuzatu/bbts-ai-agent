@@ -1,0 +1,46 @@
+# The kit's own CI: build the real image and run every test INSIDE it, as on the server
+# (separate agent and lab users, runuser, the real tool versions). Plus a start-up smoke test,
+# shell and Python lint. An update is only worth installing when this is green.
+name: kit-ci
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+concurrency:
+  group: kit-ci-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  test-in-image:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Build the image (like the server does)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true
+          tags: bbts-agents:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Tests inside the image (as root, with the agent and lab users)
+        run: docker run --rm --entrypoint python bbts-agents:ci -m pytest -q tests
+      - name: Start-up smoke test (fresh install, and an old single-project install being migrated)
+        run: docker run --rm --entrypoint python bbts-agents:ci tests/smoke.py
+      - name: Tools the agents rely on exist in the image
+        run: |
+          docker run --rm --entrypoint sh bbts-agents:ci -c '
+            set -e; runuser --version >/dev/null; git --version; node --version; gh --version | head -1
+            gitleaks version; ng version >/dev/null 2>&1 || npx -y @angular/cli@22 version >/dev/null
+            /opt/lab-venv/bin/python -c "import rembg, cv2, google.genai, openai"
+            id agent; id lab'
+  lint:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: ruff
+        run: pipx run ruff check bot tests --select F,E9 --ignore F401,F841,F541
+      - name: shellcheck
+        run: shellcheck -S warning ops/*.sh workspace-template/deploy/*.sh workspace-template/deploy/deploy-gate workspace-template/scripts/verify.sh

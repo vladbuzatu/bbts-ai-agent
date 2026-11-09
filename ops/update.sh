@@ -11,8 +11,8 @@
 set -uo pipefail
 
 KIT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-CONTROL=/var/lib/bbts/control
-cd "$KIT_DIR"
+CONTROL=${CONTROL_DIR:-/var/lib/bbts/control}
+cd "$KIT_DIR" || exit 1
 mkdir -p "$CONTROL"
 LOCK="$CONTROL/update.lock"
 exec 9>"$LOCK"
@@ -61,7 +61,7 @@ fi
 
 status running "updating $(git rev-parse --short "$PREV") -> $(git rev-parse --short "$NEW")"
 tg "🔄 Updating the agent team: $(git log -1 --format='%h %s' "$NEW")"
-cp .env "/root/.env.agent-team-backup"
+cp .env "${ENV_BACKUP:-/root/.env.agent-team-backup}"
 docker image inspect bbts-agents:latest >/dev/null 2>&1 && docker tag bbts-agents:latest bbts-agents:rollback
 
 git checkout -q --detach "$NEW"

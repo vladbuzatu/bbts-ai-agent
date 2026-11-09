@@ -242,6 +242,8 @@ async def server(o: "Orchestrator") -> str:
         out.append(f"  🌐 staging runs {s_ver[:7] if s_ver else '–'} · production runs {p_ver[:7] if p_ver else '–'}")
     if o.state.last_pushed:
         out.append(f"  ⬆️ last push {o.state.last_pushed[:7]}")
+    import hostctl
+    out += ["", "<b>🛠 Maintenance</b>"] + [f"  {e(line)}" for line in hostctl.summary_lines()]
     return "\n".join(out)
 
 
