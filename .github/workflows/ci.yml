@@ -26,9 +26,9 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
       - name: Tests inside the image (as root, with the agent and lab users)
-        run: docker run --rm --entrypoint python bbts-agents:ci -m pytest -q tests
+        run: docker run --rm -w /app --entrypoint python bbts-agents:ci -m pytest -q tests
       - name: Start-up smoke test (fresh install, and an old single-project install being migrated)
-        run: docker run --rm --entrypoint python bbts-agents:ci tests/smoke.py
+        run: docker run --rm -w /app --entrypoint python bbts-agents:ci tests/smoke.py
       - name: Tools the agents rely on exist in the image
         run: |
           docker run --rm --entrypoint sh bbts-agents:ci -c '
