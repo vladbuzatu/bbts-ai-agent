@@ -62,7 +62,7 @@ COMMANDS = [
     ("run", "Start a studio job: /run <agent> <brief>"),
     ("jobs", "Recent studio jobs"),
     ("job", "The current studio job"),
-    ("pm", "Talk to the Project Manager again"),
+    ("pm", "Back to the PM · /pm <message> asks it without leaving a job"),
     ("project", "Which project /status shows: /project <name>"),
     ("lab", "CarStage lab: what's running · spend · sync code"),
     ("update", "Update the agent team to the latest version"),
@@ -219,6 +219,12 @@ def build_app() -> Application:
         await send(app, f"↩️ Undo this task?\n\n{c['subject']}\n{c['when']} · {c['stat'] or 'no file changes'}\n\n"
                         "This reverts its changes (a new commit, so it can be redone later).",
                    buttons=[[("↩️ Yes, undo it", f"undo:{c['sha'][:40]}"), ("✖️ Keep it", "undo:no")]])
+
+    async def pm_reply(text: str) -> str:
+        busy = orch.ops.busy()
+        if busy and not (orch.build_task and not orch.build_task.done()):
+            return busy
+        return await with_typing(app, orch.chat(text))
 
     async def pm_message(text: str):
         async def still_working():
@@ -640,7 +646,16 @@ def build_app() -> Application:
 
     @owner_only
     async def on_pm(update: Update, context: ContextTypes.DEFAULT_TYPE):
-        await send(app, orch.studio.deactivate())
+        text = " ".join(context.args or []).strip()
+        if not text:
+            await send(app, orch.studio.deactivate())
+            return
+        # /pm <message>: one message to the PM without leaving the active studio job
+        try:
+            reply = await pm_reply(text)
+        except Exception as e:
+            reply = f"PM error: {e}"
+        await send(app, "[PM] " + reply)
 
     @owner_only
     async def on_file(update: Update, context: ContextTypes.DEFAULT_TYPE):

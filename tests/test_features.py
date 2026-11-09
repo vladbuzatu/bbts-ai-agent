@@ -97,8 +97,9 @@ def test_studio_job_flow_and_file_boundaries(make_orch, monkeypatch):
     assert sent == ["Oferta.pdf"] and S.active_job()["status"] == "done"
 
 
-def test_studio_and_build_never_run_together(make_orch):
+def test_studio_and_build_never_run_together_in_single_lane_mode(make_orch, monkeypatch):
     import asyncio
+    monkeypatch.setenv("PARALLEL_LANES", "0")
     o = make_orch()
 
     async def go():

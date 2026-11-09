@@ -208,6 +208,10 @@ class Orchestrator:
         self.send_file = send_file
         self.lock = asyncio.Lock()          # exclusive operations (see Ops)
         self.ops = Ops(self.lock)
+        # A second lane for studio jobs: they work in their own folders, so they can run while the PM
+        # talks or builds (PARALLEL_LANES=0 puts everything back in one queue, e.g. on a small server).
+        self.parallel = os.environ.get("PARALLEL_LANES", "1") != "0"
+        self.studio_ops = Ops(asyncio.Lock()) if self.parallel else self.ops
         self.build_task: asyncio.Task | None = None
         self.current_turn: asyncio.Task | None = None
         sandbox.lock_down(self.cfg.data_dir)   # bot-only: state, log, git mirror
@@ -825,7 +829,7 @@ class Orchestrator:
     def start_build(self, scope: list[str] | None = None) -> bool:
         if self.build_task and not self.build_task.done():
             return False
-        if getattr(self, "studio", None) and self.studio.busy:
+        if getattr(self, "studio", None) and self.studio.busy and not self.parallel:
             return False
         self.state.awaiting_input = False
         self.state.build_scope = self.resolve_scope(scope)

@@ -54,7 +54,8 @@ class Curator:
         return datetime.now(ZoneInfo(self.cfg.timezone))
 
     def _team_idle(self) -> bool:
-        return not (self.o.build_task and not self.o.build_task.done()) and not self.o.lock.locked()
+        return (not (self.o.build_task and not self.o.build_task.done()) and not self.o.lock.locked()
+                and not self.o.studio_ops.lock.locked())
 
     def _cleanup_worktree(self, branch: str | None = None) -> None:
         if self.wt.exists():

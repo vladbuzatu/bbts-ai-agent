@@ -116,6 +116,7 @@ def test_duplicate_build_is_refused(make_orch, monkeypatch):
 
 # 7. Concurrent operations: the controller refuses instead of racing
 def test_operations_do_not_collide(make_orch, monkeypatch):
+    monkeypatch.setenv("PARALLEL_LANES", "0")       # one queue for everything (small servers)
     o = make_orch()
 
     async def go():
@@ -219,3 +220,15 @@ def test_failing_tests_are_fed_back_and_false_completion_rejected(make_orch, mon
     run(go())
     assert "FAILED" in fc.calls[1][0]
     assert not o.rec.last("complete and verified")
+
+
+def test_studio_lane_runs_beside_the_pm(make_orch):
+    o = make_orch()                                  # PARALLEL_LANES defaults to on
+
+    async def go():
+        async with o.ops.run("build round 3"):
+            assert o.studio._blocked_reason() is None     # a studio job may start meanwhile
+            async with o.studio_ops.run("studio job commercial-offer"):
+                assert "Busy" in o.studio._blocked_reason()
+                assert not o.curator._team_idle()
+    run(go())

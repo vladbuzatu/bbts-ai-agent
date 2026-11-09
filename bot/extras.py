@@ -233,7 +233,9 @@ async def server(o: "Orchestrator") -> str:
 
     out += ["", "<b>🧩 Activity</b>"]
     busy = o.ops.label
-    out.append(f"  {'⏳ ' + e(busy) if busy else '💤 nothing exclusive running'}")
+    out.append(f"  {'⏳ ' + e(busy) if busy else '💤 PM and build team idle'}")
+    if o.parallel and o.studio_ops.label:
+        out.append(f"  🎛 {e(o.studio_ops.label)} (in parallel)")
     if any(p.returncode is None for p in o.preview_procs.values()):
         out.append("  👀 app preview running (/preview stop)")
     s_ver = await o.running_version(o.cfg.staging_url)

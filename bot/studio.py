@@ -219,14 +219,13 @@ class Studio:
 
     # --------------------------------------------------------------- turns
     def _blocked_reason(self) -> str | None:
-        if self.o.build_task and not self.o.build_task.done():
-            return "The build team is working. Studio jobs don't run in parallel with it: /stop the build first, or wait."
         if self.busy:
             return "A studio job is already working. Wait for its reply (or /job stop)."
-        busy = self.o.ops.busy()
-        if busy:
-            return busy
-        return None
+        if self.o.parallel:
+            return self.o.studio_ops.busy()
+        if self.o.build_task and not self.o.build_task.done():
+            return "The build team is working. Studio jobs don't run in parallel with it: /stop the build first, or wait."
+        return self.o.ops.busy()
 
     async def start(self, agent: str, brief: str) -> str:
         if agent not in self.agents():
@@ -262,7 +261,7 @@ class Studio:
 
     async def _turn(self, job: dict, prompt: str) -> None:
         try:
-            async with self.o.ops.run(f"studio job {job['agent']}"):
+            async with self.o.studio_ops.run(f"studio job {job['agent']}"):
                 reply, ok = await self.o._run_turn(prompt, self._target(job))
             if "NEEDS_INPUT:" in reply:
                 job["status"] = "waiting"
