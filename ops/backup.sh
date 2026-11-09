@@ -34,6 +34,7 @@ vol_backup workspace workspace
 vol_backup data data
 vol_backup studio studio
 vol_backup claude claude
+vol_backup claude-studio claude-studio
 tar czf "$DEST/app.tgz" --ignore-failed-read /opt/app /opt/carstage 2>/dev/null || [ $? -eq 1 ] || fail+=(app)
 for env in staging production; do
   c="app-$env-db-1"

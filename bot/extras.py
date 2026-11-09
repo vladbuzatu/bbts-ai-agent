@@ -246,6 +246,11 @@ async def server(o: "Orchestrator") -> str:
         out.append(f"  ⬆️ last push {o.state.last_pushed[:7]}")
     import hostctl
     out += ["", "<b>🛠 Maintenance</b>"] + [f"  {e(line)}" for line in hostctl.summary_lines()]
+    proxy = getattr(o, "egress", None)
+    if proxy:
+        recent = sorted(h for h, t in proxy.blocked.items() if time.time() - t < 86400)
+        out.append(f"  🛡 Agents' internet: allowlist only" + (f" · blocked today: {e(', '.join(recent[:8]))}"
+                                                              if recent else ""))
     return "\n".join(out)
 
 

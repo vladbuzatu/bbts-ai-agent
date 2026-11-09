@@ -139,7 +139,7 @@ class Studio:
         for sub in JOB_SUBDIRS:
             (d / sub).mkdir(parents=True, exist_ok=True)
         (d / "BRIEF.md").write_text(f"# Brief\n\nAgent: {agent}\nCreated: {now:%Y-%m-%d %H:%M}\n\n{brief}\n")
-        sandbox.give_to_agent(d)
+        sandbox.give_to_studio(d)
         job = {"id": jid, "agent": agent, "dir": str(d), "session": None, "title": brief[:80],
                "created": time.time(), "status": "open"}
         self.st["jobs"][jid] = job
@@ -211,8 +211,8 @@ class Studio:
             mcp_servers={"studio": server, **self.o.extra_mcp_servers()},
             agents=helpers or None,
             resume=job.get("session"),
-            user=sandbox.agent_user(),
-            env=sandbox.agent_env(),
+            user=sandbox.studio_user(),
+            env=sandbox.studio_env(),
             max_turns=self.o.cfg.studio_max_turns,
             model=(lead or {}).get("model") or self.o.cfg.model,
         )
@@ -302,7 +302,7 @@ class Studio:
             dest = self.root / "inbox" / safe
         dest.parent.mkdir(parents=True, exist_ok=True)
         dest.write_bytes(data)
-        sandbox.give_to_agent(dest.parent)
+        sandbox.give_to_studio(dest.parent)
         return dest, ("brand" if dest.parent.name == "brand" else ("job" if job else "inbox"))
 
     # ----------------------------------------------------------- commands

@@ -2,7 +2,7 @@ FROM python:3.12-slim-bookworm
 
 # System tools + Node.js 22 (Angular CLI, Playwright)
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        git curl ca-certificates build-essential procps ripgrep util-linux \
+        git curl ca-certificates build-essential procps ripgrep util-linux iptables ffmpeg \
     && curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
     && apt-get install -y --no-install-recommends nodejs \
     && rm -rf /var/lib/apt/lists/*
@@ -66,12 +66,19 @@ COPY studio-template/ ./studio-template/
 COPY master-template/ ./master-template/
 RUN ln -sf /app/bot/tools/html2pdf /usr/local/bin/html2pdf && chmod +x /app/bot/tools/html2pdf
 
-# Two identities:
-#  - root (inside the container) runs the bot and alone holds the Telegram/GitHub tokens
-#  - "agent" runs every agent, test, preview and git command on the project
+# Identities:
+#  - root (inside the container) runs the bot and alone holds the Telegram/GitHub/provider keys
+#  - "agent" runs the build team: every agent, test, preview and git command on the projects
+#    (with AGENT_EGRESS=restricted only this user's internet goes through the allowlist)
+#  - "studio" runs studio jobs (website research needs the open web)
+#  - "lab" runs CarStage pipelines with the lab's provider keys (created above)
 RUN useradd -m -u 1000 agent \
+    && useradd -m -u 1002 studio \
     && mkdir -p /workspace /studio /home/agent/.npm-global /home/agent/.claude /data \
-    && chown -R agent:agent /workspace /studio /home/agent /ms-playwright \
+             /home/studio/.npm-global /home/studio/.claude \
+    && chown -R agent:agent /workspace /home/agent /ms-playwright \
+    && chown -R studio:studio /studio /home/studio \
+    && chmod a+rX /ms-playwright \
     && chown root:root /data && chmod 700 /data \
     && chmod 755 /app && chmod -R a+rX /app
 
@@ -84,7 +91,7 @@ ENV PATH=/home/agent/.npm-global/bin:/home/agent/.local/bin:$PATH \
     TEMPLATE_DIR=/app/workspace-template \
     AGENT_USER=agent
 
-RUN for u in root agent; do \
+RUN for u in root agent studio; do \
       su "$u" -s /bin/sh -c 'git config --global user.name "Agent Team" \
         && git config --global user.email "agents@localhost" \
         && git config --global init.defaultBranch main \

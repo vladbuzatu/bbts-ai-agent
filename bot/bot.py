@@ -244,16 +244,19 @@ def build_app() -> Application:
     # ----------------------------------------------------------------- commands
     @owner_only
     async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        await handle_text(update.message.text)
+
+    async def handle_text(text: str):
         if orch.prs.awaiting_feedback:
-            await send(app, await orch.prs.feedback(update.message.text))
+            await send(app, await orch.prs.feedback(text))
             return
         job = orch.studio.active_job()
         if job:
-            r = await orch.studio.message(update.message.text)
+            r = await orch.studio.message(text)
             await send(app, r or f"⏳ [{job['agent']}] working on it… (/pm to talk to the PM instead)")
             return
         try:
-            await pm_message(update.message.text)
+            await pm_message(text)
         except asyncio.CancelledError:
             await send(app, "⏹ Stopped.")
 
@@ -684,6 +687,29 @@ def build_app() -> Application:
         await send(app, "[PM] " + reply)
 
     @owner_only
+    async def on_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        import voice
+        msg = update.message
+        media = msg.voice or msg.audio
+        if not media:
+            return
+        if not voice.available():
+            await send(app, "🎙 To use voice messages, add VOICE_OPENAI_API_KEY to .env (an OpenAI key) and restart.")
+            return
+        f = await media.get_file()
+        data = bytes(await f.download_as_bytearray())
+        try:
+            text = await asyncio.to_thread(voice.transcribe, data, ".ogg" if msg.voice else ".mp3")
+        except RuntimeError as e:
+            await send(app, f"🎙 {e}")
+            return
+        if not text:
+            await send(app, "🎙 I couldn't make out any words.")
+            return
+        await send(app, f"🎙 «{text}»")
+        await handle_text(text)
+
+    @owner_only
     async def on_file(update: Update, context: ContextTypes.DEFAULT_TYPE):
         msg = update.message
         if msg.document:
@@ -841,10 +867,29 @@ def build_app() -> Application:
         app.add_handler(CommandHandler(name, fn))
     app.add_handler(CallbackQueryHandler(on_button))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_text))
+    app.add_handler(MessageHandler(filters.VOICE | filters.AUDIO, on_voice))
     app.add_handler(MessageHandler(filters.Document.ALL | filters.PHOTO, on_file))
 
     async def on_startup(app: Application):
         orch.curator.start_scheduler()
+        if os.environ.get("DASHBOARD", "1") != "0":
+            try:
+                import dashboard
+                dashboard.Dashboard(orch, int(os.environ.get("DASHBOARD_PORT", "8090"))).start()
+            except OSError as e:
+                log.warning("Dashboard not started: %s", e)
+        if sandbox.egress_restricted():
+            import egress
+            proxy = egress.EgressProxy(on_block=lambda host: orch._log(f"EGRESS blocked {host}"))
+            try:
+                await proxy.start()
+                orch.egress = proxy
+            except OSError as e:
+                log.error("Egress proxy failed: %s", e)
+            problem = await asyncio.to_thread(egress.install_firewall)
+            if problem:
+                await send(app, f"⚠️ AGENT_EGRESS=restricted, but the firewall couldn't be set: {problem}. "
+                                "The agents' internet is NOT limited until this is fixed.")
         try:
             await app.bot.set_my_commands([BotCommand(c, d) for c, d in COMMANDS])
         except TelegramError as e:

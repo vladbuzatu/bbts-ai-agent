@@ -16,6 +16,8 @@ services:
       LAB_BUDGET_USD: ${LAB_BUDGET_USD:-5}
     restart: unless-stopped
     init: true   # reaps finished child processes (no <defunct> pile-up)
+    # Lets the bot set a firewall rule for the agent user when AGENT_EGRESS=restricted (container only).
+    cap_add: [NET_ADMIN]
     healthcheck:
       # The bot touches /data/heartbeat every 20 s while it's alive and answering.
       test: ["CMD-SHELL", "test $$(( $$(date +%s) - $$(stat -c %Y /data/heartbeat 2>/dev/null || echo 0) )) -lt 120"]
@@ -28,6 +30,7 @@ services:
       - workspace:/workspace     # master folder: the team + projects/<name> (each a git repo)
       - data:/data               # bot state, session id, agent log
       - claude:/home/agent/.claude   # agent conversation history (survives rebuilds)
+      - claude-studio:/home/studio/.claude   # studio jobs' conversation history
       - studio:/studio           # studio agents, company profile, job folders (not in git)
       # CarStage code for the Model Lab (on the server: /opt/carstage). Root-owned, so agents can only
       # read it; the bot updates it from GitHub main or with the owner's approval (/lab sync).
@@ -46,4 +49,5 @@ volumes:
   workspace:
   data:
   claude:
+  claude-studio:
   studio:

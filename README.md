@@ -216,6 +216,34 @@ part (the current state is saved first). DigitalOcean's weekly droplet backups a
 **The kit's CI** (`.github/workflows/ci.yml`) builds the image and runs all tests *inside it*, plus a
 start-up smoke test and lint, on every push. Update when it's green.
 
+## Reviewing and following the work
+
+- **Pull requests in Telegram:** every PR the bot opens arrives as a card (files, +/−, tests) with
+  ✅ Merge · 💬 Request changes · ❌ Close. A change request goes to the PM and as a PR comment, and
+  starts a build for that project. Comments you write on GitHub reach the PM within 5 minutes;
+  merging on the website is noticed too.
+- **Visual regression:** screenshots (`design/screens/*.png`) are compared with the approved look after
+  every round; changed screens come with before / now / what-changed images. Merging a PR approves
+  the new look; `/screens diff [project]`, `/screens accept [project]`.
+- **Scorecard:** `/score [days]`, and every Monday: tasks committed, build rounds and how many were
+  green, PRs, deploys, reviews, agent time, tokens and API-equivalent usage, lab spend, per project.
+- **Voice:** send a voice note; it's transcribed (`VOICE_OPENAI_API_KEY`) and handled like text.
+- **Dashboard:** `ssh -L 8090:localhost:8090 root@SERVER` → http://localhost:8090 (status of every
+  project, scorecard, screenshots and diffs, lab runs, log). Read-only.
+- **Parallel lanes:** studio jobs run beside the PM and builds; `/pm <message>` asks the PM without
+  leaving a studio job.
+- **Deploys per project:** `/project urls <name> <staging> [production]`, then
+  `/deploy <name>` (preview → approve), `/deploy <name> drill|history`. The project's repo needs the
+  same workflows and a deploy gate on its server as the main project (devops-engineer sets them up).
+
+## Agents' internet allowlist
+
+`AGENT_EGRESS=restricted` (needs `cap_add: NET_ADMIN`, already in docker-compose.yml): the build team
+(user `agent`) can only reach Claude's API, package registries, GitHub and documentation sites,
+through a proxy in the bot; a firewall rule rejects anything else that user sends. Studio jobs run as
+their own user (`studio`) with normal access, because website research needs it. Blocked hosts show
+in `/server`; add hosts with `AGENT_EGRESS_ALLOW`.
+
 ## Several projects (master folder)
 
 `/workspace` is the team's master folder: the agents, playbooks, `docs/LESSONS.md` and

@@ -20,7 +20,7 @@ if [ $# -lt 2 ]; then
 fi
 DAY=$1; WHAT=$2; SRC="$ROOT/$DAY"
 [ -d "$SRC" ] || { echo "No backup $SRC"; exit 1; }
-parts=("$WHAT"); [ "$WHAT" = all ] && parts=(workspace data studio claude env)
+parts=("$WHAT"); [ "$WHAT" = all ] && parts=(workspace data studio claude claude-studio env)
 
 read -r -p "Restore ${parts[*]} from $DAY? The agent team will be stopped meanwhile. Type yes: " ok
 [ "$ok" = yes ] || { echo "Cancelled."; exit 1; }

@@ -276,7 +276,7 @@ class CarStageLab:
             self.current = {"who": job.get("agent", "?"), "run": n, "pipeline": req["pipeline"],
                             "label": req["label"], "car": req["files"]["car"].name, "started": time.time()}
             try:
-                summary = await asyncio.to_thread(self._execute, req, dest)
+                summary = await asyncio.to_thread(self._execute, req, dest, job.get("agent", ""))
             finally:
                 self.current = None
             if summary.get("not_started"):          # refund: no API call can have happened
@@ -293,7 +293,7 @@ class CarStageLab:
                         "budget": f"${job['lab_spent']:.2f} of ${budget:.2f} used"})
         return json.dumps(summary, indent=2)
 
-    def _execute(self, req: dict, dest: Path) -> dict:
+    def _execute(self, req: dict, dest: Path, job_owner: str = "") -> dict:
         runs = LAB_HOME / "runs"
         work = runs / uuid.uuid4().hex[:12]
         work.mkdir(parents=True, exist_ok=True)
@@ -359,7 +359,10 @@ class CarStageLab:
         (dest / "settings.json").write_text(json.dumps(
             {"pipeline": req["pipeline"], "settings": req["overrides"], "prompt": req["prompt"] or None,
              "car": str(req["files"]["car"]), "stage": str(req["files"]["stage"])}, indent=2))
-        sandbox.give_to_agent(dest.parent)
+        if job_owner == "pm":
+            sandbox.give_to_agent(dest.parent)
+        else:
+            sandbox.give_to_studio(dest.parent)
         shutil.rmtree(work, ignore_errors=True)
         result["files"] = files
         if meta.get("models"):

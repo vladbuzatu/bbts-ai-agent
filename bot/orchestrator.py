@@ -275,7 +275,10 @@ class Orchestrator:
         self.visual = Visual(self)
         self.studio.lab.before_run = self.repos.refresh_lab          # the lab follows GitHub main
         self.studio.lab.code_version = lambda: self.state.lab_code
-        sandbox.give_to_agent(self.cfg.master, self.cfg.studio_dir)
+        sandbox.give_to_agent(self.cfg.master)
+        pm_lab = self.cfg.studio_dir / "pm-lab"
+        sandbox.give_to_studio(self.cfg.studio_dir, skip=pm_lab)     # studio jobs: their own user
+        sandbox.give_to_agent(pm_lab)                                 # the PM's lab folder: the build team
         self._setup_git()
 
     # ------------------------------------------------------------------ setup
