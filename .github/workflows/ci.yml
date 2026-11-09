@@ -27,7 +27,7 @@ jobs:
           cache-to: type=gha,mode=max
       - name: Tests inside the image (as root, with the agent, studio and lab users)
         timeout-minutes: 20
-        run: docker run --rm -w /app --entrypoint python bbts-agents:ci -m pytest -v --durations=15 -o faulthandler_timeout=180 tests
+        run: docker run --rm -w /app -v "$PWD/ops:/app/ops:ro" --entrypoint python bbts-agents:ci -m pytest -v --durations=15 -o faulthandler_timeout=180 tests
       - name: Start-up smoke test (fresh install, and an old single-project install being migrated)
         run: docker run --rm -w /app --entrypoint python bbts-agents:ci tests/smoke.py
       - name: Tools the agents rely on exist in the image
