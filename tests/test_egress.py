@@ -15,6 +15,9 @@ def test_allowlist_matches_hosts_and_subdomains(monkeypatch):
     assert egress.allowed("docs.example.org", hosts)
     assert not egress.allowed("evil-anthropic.com", hosts)        # suffix must be a whole label
     assert not egress.allowed("pastebin.com", hosts)
+    assert egress.allowed("pypi.org", hosts) and not egress.allowed("upload.pypi.org", hosts)
+    assert not egress.allowed("github.com", hosts) and not egress.allowed("api.github.com", hosts)
+    assert egress.allowed("codeload.github.com", hosts)
 
 
 def test_proxy_tunnels_allowed_hosts_and_refuses_others():

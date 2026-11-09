@@ -89,7 +89,8 @@ def default_settings(pipeline: str) -> dict[str, str]:
 def in_focus(pipeline: str) -> bool:
     return not FOCUS_PIPELINES or pipeline in FOCUS_PIPELINES
 VALUE_RE = re.compile(r"^[A-Za-z0-9._:/+,x-]{1,100}$")
-BLOCKED_NAME_RE = re.compile(r"(KEY|SECRET|TOKEN|PASSWORD|_DIR$|_PATH$|AUTH|ALLOWED|URL)")
+BLOCKED_NAME_RE = re.compile(r"(KEY|SECRET|TOKEN|PASSWORD|_DIR$|_PATH$|AUTH|ALLOWED|URL|URI|ENDPOINT|HOST|"
+                             r"BASE|PROXY|DOMAIN|ADDR|PORT|REGION|PROJECT|LOCATION)")
 IMAGE_EXT = {".jpg", ".jpeg", ".png", ".webp"}
 
 
@@ -300,7 +301,10 @@ class CarStageLab:
         inputs = {}
         for key, src in req["files"].items():
             p = work / f"_in_{key}{src.suffix.lower()}"
-            shutil.copyfile(src, p)
+            # O_NOFOLLOW: a file swapped for a symlink after validation must not make root copy it
+            fd = os.open(src, os.O_RDONLY | os.O_NOFOLLOW)
+            with os.fdopen(fd, "rb") as fin, open(p, "wb") as fout:
+                shutil.copyfileobj(fin, fout)
             inputs[key] = str(p)
         request = {"code_dir": str(self.code_dir), "pipeline": req["pipeline"], "out_dir": str(work),
                    "prompt": req["prompt"], **inputs}
@@ -513,3 +517,30 @@ def recent_runs(job_dirs: list[Path], n: int = 8) -> list[dict]:
                          "error": (meta.get("error") or "")[:120], "seconds": round((meta.get("wall_ms") or 0) / 1000),
                          "car": Path(settings.get("car", "")).name, "where": Path(jd).name})
     return sorted(runs, key=lambda r: r["when"], reverse=True)[:n]
+
+
+def snapshot(src: Path, dest_parent: Path) -> Path:
+    """Copy an agent-writable folder into a root-only snapshot, safely: the archive is made BY THE AGENT
+    USER (it can only read what agents can read) and unpacked by root with no links at all.
+    /lab sync shows and installs exactly this snapshot."""
+    import subprocess as sp
+    import tarfile
+    import tempfile
+    out = Path(tempfile.mkdtemp(prefix="lab-sync-", dir=dest_parent))
+    excludes = [f"--exclude={d}" for d in sorted(SYNC_SKIP_DIRS)]
+    proc = sp.Popen(sandbox.as_agent(["tar", "-C", str(src), "-cf", "-", *excludes, "."]),
+                    stdout=sp.PIPE, stderr=sp.DEVNULL)
+
+    def only_files(member, path):
+        if not (member.isfile() or member.isdir()):
+            return None                          # no symlinks, hard links, devices
+        return tarfile.data_filter(member, path)
+    try:
+        with tarfile.open(fileobj=proc.stdout, mode="r|") as tf:
+            tf.extractall(out, filter=only_files)
+    except tarfile.TarError as e:
+        shutil.rmtree(out, ignore_errors=True)
+        raise OSError(f"couldn't read {src} as the agent user ({e})") from None
+    finally:
+        proc.wait()
+    return out

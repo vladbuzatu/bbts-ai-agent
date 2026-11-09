@@ -43,7 +43,8 @@ def kit(tmp_path):
     sh("git", "push", "-q", "origin", "main", cwd=work)
     control = tmp_path / "control"
     env = dict(os.environ, PATH=f"{FAKES}:{os.environ['PATH']}", CONTROL_DIR=str(control),
-               ENV_BACKUP=str(tmp_path / "env.bak"), FAKE_DOCKER_LOG=str(tmp_path / "docker.log"))
+               ENV_BACKUP=str(tmp_path / "env.bak"), FAKE_DOCKER_LOG=str(tmp_path / "docker.log"),
+               PREUPDATE_DIR=str(tmp_path / "preupdate"))
     return server, control, env, tmp_path
 
 
@@ -138,3 +139,15 @@ def test_backup_keeps_7_days_plus_recent_sundays(tmp_path):
     st = json.loads((control / "backup-status.json").read_text())
     assert st["day"] == today.isoformat()
     assert (root / today.isoformat() / "env").exists()
+
+
+def test_stale_heartbeat_from_the_old_bot_is_not_success(kit):
+    server, control, env, tmp = kit
+    script = (server / "ops" / "update.sh").read_text().replace("seq 1 48", "seq 1 2").replace("sleep 5", "sleep 0")
+    (server / "ops" / "update.sh").write_text(script)
+    sh("git", "update-index", "--assume-unchanged", "ops/update.sh", cwd=server)
+    r = sh("bash", "ops/update.sh", cwd=server, env=dict(env, FAKE_DOCKER_HEALTH="healthy", FAKE_DOCKER_BOOT="1000"),
+           check=False)
+    assert r.returncode == 1 and status(control)["state"] == "rolled_back"
+    calls = (tmp / "docker.log").read_text()
+    assert "find /v -mindepth 1 -delete" in calls               # data restored from the pre-update snapshot

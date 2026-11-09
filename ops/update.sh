@@ -16,7 +16,11 @@ cd "$KIT_DIR" || exit 1
 mkdir -p "$CONTROL"
 LOCK="$CONTROL/update.lock"
 exec 9>"$LOCK"
-flock -n 9 || { echo "Another update is running."; exit 1; }
+if [ "${1:-}" = "--check" ]; then
+  flock -n 9 || exit 0                          # an update is running: skip this check quietly
+else
+  flock -w 600 9 || { echo "Another update is running."; exit 1; }
+fi
 
 # shellcheck source=ops/lib.sh
 . "$KIT_DIR/ops/lib.sh"
@@ -64,22 +68,45 @@ tg "🔄 Updating the agent team: $(git log -1 --format='%h %s' "$NEW")"
 cp .env "${ENV_BACKUP:-/root/.env.agent-team-backup}"
 docker image inspect bbts-agents:latest >/dev/null 2>&1 && docker tag bbts-agents:latest bbts-agents:rollback
 
-git checkout -q --detach "$NEW"
+# Snapshot of the bot's data and workspace: a new version may migrate them (layout, state), and a
+# rollback must hand the previous version the data it understands.
+SNAP="${PREUPDATE_DIR:-/var/backups/bbts-preupdate}"
+rm -rf "$SNAP" && mkdir -p "$SNAP" && chmod 700 "$SNAP"
+for vol in data workspace; do
+  docker run --rm --entrypoint tar -v "agent-team-kit_$vol":/v:ro -v "$SNAP":/b bbts-agents:latest \
+    czf "/b/$vol.tgz" -C /v --exclude=node_modules --exclude=.venv --exclude=.angular . >/dev/null 2>&1 || true
+done
+
+if ! git checkout -q --detach "$NEW"; then
+  status failed "couldn't check out the new version (local files in the way?)"
+  tg "❌ Update stopped: couldn't switch the kit folder to the new version (git checkout failed). Nothing changed."
+  exit 1
+fi
 if ! docker compose build -q; then
   git checkout -q --detach "$PREV"
   status failed "build failed; still on the previous version"
   tg "❌ Update failed while building. Still running the previous version $(git rev-parse --short "$PREV")."
   exit 1
 fi
-docker compose up -d --remove-orphans
+NEW_IMAGE=$(docker image inspect --format '{{.Id}}' bbts-agents:latest 2>/dev/null)
+STARTED=$(date +%s)
+up_ok=1
+docker compose up -d --remove-orphans || up_ok=0
 
-# Wait for the bot to report healthy (heartbeat), up to ~4 minutes.
+# Healthy = the container runs the NEW image, and the heartbeat comes from a bot process that started
+# after this update began (the heartbeat file starts with the bot's start time).
 healthy=0
-for _ in $(seq 1 48); do
-  sleep 5
-  st=$(docker inspect --format '{{.State.Health.Status}}' agent-team-kit-agents-1 2>/dev/null || echo none)
-  [ "$st" = healthy ] && { healthy=1; break; }
-done
+if [ "$up_ok" = 1 ]; then
+  for _ in $(seq 1 48); do
+    sleep 5
+    st=$(docker inspect --format '{{.State.Health.Status}}' agent-team-kit-agents-1 2>/dev/null || echo none)
+    img=$(docker inspect --format '{{.Image}}' agent-team-kit-agents-1 2>/dev/null || echo none)
+    boot=$(docker exec agent-team-kit-agents-1 cat /data/heartbeat 2>/dev/null | cut -d' ' -f1 | tr -dc 0-9)
+    if [ "$st" = healthy ] && { [ -z "$NEW_IMAGE" ] || [ "$img" = "$NEW_IMAGE" ]; } && [ "${boot:-0}" -ge "$STARTED" ]; then
+      healthy=1; break
+    fi
+  done
+fi
 
 if [ "$healthy" = 1 ]; then
   git checkout -q -B main "$NEW" 2>/dev/null || true
@@ -88,14 +115,20 @@ if [ "$healthy" = 1 ]; then
   exit 0
 fi
 
-# Roll back: previous code + previous image, no rebuild.
+# Roll back: previous code + previous image + the data as it was before the update.
 docker compose logs --tail 40 agents > "$CONTROL/update-failed.log" 2>&1 || true
+docker compose stop agents >/dev/null 2>&1 || true
 git checkout -q --detach "$PREV"
 if docker image inspect bbts-agents:rollback >/dev/null 2>&1; then
   docker tag bbts-agents:rollback bbts-agents:latest
 fi
+for vol in data workspace; do
+  [ -s "$SNAP/$vol.tgz" ] || continue
+  docker run --rm --entrypoint sh -v "agent-team-kit_$vol":/v -v "$SNAP":/b bbts-agents:latest -c \
+    "find /v -mindepth 1 -delete && tar xzf /b/$vol.tgz -C /v" >/dev/null 2>&1 || true
+done
 docker compose up -d --no-build --remove-orphans
 git checkout -q -B main "$PREV" 2>/dev/null || true
 status rolled_back "new version didn't become healthy; back on $(git rev-parse --short "$PREV")"
-tg "↩️ Update rolled back: the new version didn't start properly. Back on $(git rev-parse --short "$PREV"). The last log lines are in $CONTROL/update-failed.log."
+tg "↩️ Update rolled back: the new version didn't start properly. Back on $(git rev-parse --short "$PREV") with the data as it was before. The last log lines are in $CONTROL/update-failed.log."
 exit 1

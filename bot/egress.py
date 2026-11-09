@@ -7,7 +7,9 @@
   (docker-compose.yml) and only applies to the agent user: studio jobs (website research) run as
   their own user with normal access, the bot itself is unaffected.
 
-Add hosts with AGENT_EGRESS_ALLOW=example.com,docs.example.org (a host also allows its subdomains).
+Add hosts with AGENT_EGRESS_ALLOW=example.com,docs.example.org (a host also allows its subdomains;
+"=host" allows only that exact host). An allowlist narrows what a misled agent can reach; it can't make
+every allowed host read-only (e.g. a package registry accepts uploads with someone's token).
 """
 from __future__ import annotations
 
@@ -25,10 +27,10 @@ log = logging.getLogger("egress")
 DEFAULT_ALLOW = (
     # Claude
     "anthropic.com", "claude.ai", "claude.com",
-    # packages
-    "registry.npmjs.org", "npmjs.org", "npmjs.com", "pypi.org", "pythonhosted.org", "nodejs.org",
-    # code
-    "github.com", "githubusercontent.com",
+    # packages ("=" means exactly that host, not its subdomains: upload.pypi.org stays blocked)
+    "registry.npmjs.org", "=pypi.org", "files.pythonhosted.org", "nodejs.org",
+    # code downloads only (github.com itself would accept a git push to someone else's repo)
+    "codeload.github.com", "githubusercontent.com",
     # documentation the playbooks point to
     "angular.dev", "angular.io", "djangoproject.com", "django-rest-framework.org", "developer.mozilla.org",
     "web.dev", "w3.org", "owasp.org", "python.org", "typescriptlang.org", "playwright.dev", "vitest.dev",
@@ -49,7 +51,13 @@ def allowlist() -> tuple[str, ...]:
 
 def allowed(host: str, hosts: tuple[str, ...] | None = None) -> bool:
     host = host.lower().rstrip(".")
-    return any(host == h or host.endswith("." + h) for h in (hosts or allowlist()))
+    for h in hosts or allowlist():
+        if h.startswith("="):
+            if host == h[1:]:
+                return True
+        elif host == h or host.endswith("." + h):
+            return True
+    return False
 
 
 class EgressProxy:
@@ -150,7 +158,10 @@ def install_firewall() -> str | None:
         cmds = [
             [tool, "-N", CHAIN],
             [tool, "-F", CHAIN],
-            [tool, "-A", CHAIN, "-o", "lo", "-j", "ACCEPT"],
+            # no DNS: names are resolved by the proxy (DNS queries could otherwise smuggle data out)
+            [tool, "-A", CHAIN, "-p", "udp", "--dport", "53", "-j", "REJECT"],
+            [tool, "-A", CHAIN, "-p", "tcp", "--dport", "53", "-j", "REJECT"],
+            [tool, "-A", CHAIN, "-o", "lo", "-j", "ACCEPT"],     # the proxy, dev servers, test databases
             [tool, "-A", CHAIN, "-j", "REJECT"],
         ]
         for c in cmds:

@@ -510,8 +510,9 @@ def build_app() -> Application:
                 await send(app, "Usage:\n/project link <name> <owner/repo>\n/project push <name>\n/project pull <name>")
                 return
             name = context.args[1].lower()
+            allow_wf = sub == "push" and len(context.args) > 2 and context.args[2].lower() == "workflows"
             coro = (orch.repos.link(name, context.args[2]) if sub == "link" else
-                    orch.repos.publish(name) if sub == "push" else orch.repos.pull(name))
+                    orch.repos.publish(name, allow_workflows=allow_wf) if sub == "push" else orch.repos.pull(name))
             await send(app, await with_typing(app, coro))
             return
         if context.args:
@@ -613,36 +614,56 @@ def build_app() -> Application:
                   "/lab budget &lt;usd&gt; · /lab reset"]
         return "\n".join(lines)
 
+    sync_snap: dict = {}          # the snapshot the owner was shown (installed as-is on "Install")
+
     async def lab_sync(apply: bool):
+        import shutil as _sh
         src, dst = orch.project_root(os.environ.get("LAB_PROJECT", "carstage"))[1], lab_mod.CODE_DIR
-        if not (src / "backend").is_dir():
-            await send(app, f"Nothing to sync: the PM has no CarStage copy at {src}.")
-            return
-        plan = await asyncio.to_thread(lab_mod.sync_plan, src, dst)
-        total = len(plan["added"]) + len(plan["changed"]) + len(plan["removed"])
-        if not total:
-            await send(app, "✅ The lab already runs the PM's current CarStage code.")
-            return
         if apply:
+            snap = sync_snap.pop("path", None)
+            if not snap or not Path(snap).is_dir():
+                await send(app, "That review expired. Send /lab sync again.")
+                return
             try:
-                n = await asyncio.to_thread(lab_mod.sync_apply, src, dst)
+                n = await asyncio.to_thread(lab_mod.sync_apply, Path(snap), dst)
             except OSError as e:
                 await send(app, f"❌ Couldn't update the lab code: {e}\n"
                            "If it says read-only, update docker-compose.yml from the latest kit and run "
                            "docker compose up -d.")
                 return
+            finally:
+                _sh.rmtree(snap, ignore_errors=True)
             orch._log(f"LAB SYNC: {n} file(s) from {src}")
             orch.state.lab_code.update({"source": "the PM's working copy (approved /lab sync, not merged yet)",
                                         "sha": "", "at": time.time()})
             orch._save_state()
             await send(app, f"✅ Lab code updated ({n} file(s)). New lab runs use it from now on.")
             return
+        if not (src / "backend").is_dir():
+            await send(app, f"Nothing to sync: the PM has no CarStage copy at {src}.")
+            return
+        old = sync_snap.pop("path", None)
+        if old:
+            _sh.rmtree(old, ignore_errors=True)
+        try:
+            snap = await asyncio.to_thread(lab_mod.snapshot, src, orch.cfg.data_dir)
+        except OSError as e:
+            await send(app, f"❌ {e}")
+            return
+        plan = await asyncio.to_thread(lab_mod.sync_plan, snap, dst)
+        total = len(plan["added"]) + len(plan["changed"]) + len(plan["removed"])
+        if not total:
+            _sh.rmtree(snap, ignore_errors=True)
+            await send(app, "✅ The lab already runs the PM's current CarStage code.")
+            return
+        sync_snap["path"] = str(snap)
+
         def lst(name, items):
             return f"<b>{name} ({len(items)})</b>\n" + "\n".join(f"• {html.escape(i)}" for i in items[:15]) + \
                    ("\n• …" if len(items) > 15 else "") + "\n" if items else ""
         text = ("🧪 <b>Install the PM's CarStage changes in the lab?</b>\nThe lab runs this code with your "
-                "provider keys, so check the list.\n\n" + lst("Changed", plan["changed"]) +
-                lst("Added", plan["added"]) + lst("Removed", plan["removed"]))
+                "provider keys, so check the list. Exactly this version is installed (later changes aren't).\n\n"
+                + lst("Changed", plan["changed"]) + lst("Added", plan["added"]) + lst("Removed", plan["removed"]))
         if plan["flags"]:
             text += ("\n⚠️ <b>New lines worth a look</b> (network, processes, environment):\n" +
                      "\n".join(f"<code>{html.escape(f)}</code>" for f in plan["flags"][:12]))
@@ -790,6 +811,8 @@ def build_app() -> Application:
         elif data == "labsync:yes":
             await lab_sync(apply=True)
         elif data == "labsync:no":
+            import shutil as _sh
+            _sh.rmtree(sync_snap.pop("path", "") or "/nonexistent", ignore_errors=True)
             await send(app, "OK, the lab keeps its current code.")
         elif data == "undo:no":
             await send(app, "OK, kept.")

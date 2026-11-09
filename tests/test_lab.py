@@ -259,3 +259,26 @@ def test_sync_never_touches_model_weights(tmp_path):
     (dst / "backend" / "models" / "yolov8n-seg.onnx").write_bytes(b"weights")
     lab.sync_apply(src, dst)
     assert (dst / "backend" / "models" / "yolov8n-seg.onnx").exists()
+
+
+def test_sync_snapshot_has_no_links_and_is_what_gets_installed(base):
+    tmp_path = base
+    src, dst, data = tmp_path / "src", tmp_path / "dst", tmp_path / "data"
+    (src / "backend" / "compose_api").mkdir(parents=True)
+    (dst / "backend").mkdir(parents=True)
+    data.mkdir()
+    (src / "backend" / "compose_api" / "a.py").write_text("x = 1\n")
+    (tmp_path / "secret.txt").write_text("ROOT ONLY")
+    (src / "backend" / "leak.txt").symlink_to(tmp_path / "secret.txt")     # an agent's trick
+    import os
+    os.chmod(tmp_path, 0o755)
+    for d in (src, src / "backend", src / "backend" / "compose_api"):
+        os.chmod(d, 0o755)
+    os.chmod(src / "backend" / "compose_api" / "a.py", 0o644)
+    snap = lab.snapshot(src, data)
+    assert (snap / "backend" / "compose_api" / "a.py").read_text() == "x = 1\n"
+    assert not (snap / "backend" / "leak.txt").exists()
+    (src / "backend" / "compose_api" / "a.py").write_text("x = 'changed after review'\n")
+    lab.sync_apply(snap, dst)
+    assert (dst / "backend" / "compose_api" / "a.py").read_text() == "x = 1\n"
+    assert not (dst / "backend" / "leak.txt").exists()

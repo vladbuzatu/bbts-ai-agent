@@ -14,12 +14,13 @@ from pathlib import Path
 CONTROL = Path(os.environ.get("CONTROL_DIR", "/control"))
 DATA = Path(os.environ.get("DATA_DIR", "/data"))
 REF_RE = re.compile(r"^[A-Za-z0-9._/-]{1,100}$")
+BOOT = int(time.time())          # when this bot process started (ops/update.sh checks it)
 
 
 def heartbeat() -> None:
     """Touched every 20 s by the background loop; the container healthcheck reads its age."""
     try:
-        (DATA / "heartbeat").write_text(str(int(time.time())))
+        (DATA / "heartbeat").write_text(f"{BOOT} {int(time.time())}")
     except OSError:
         pass
 

@@ -6,9 +6,21 @@
 #   FAKE_DOCKER_FAIL    substring: any call containing it exits 1 (deploy-gate tests)
 echo "docker $*" >> "${FAKE_DOCKER_LOG:-/dev/null}"
 if [ -n "${FAKE_DOCKER_FAIL:-}" ] && [[ "$*" == *"$FAKE_DOCKER_FAIL"* ]]; then exit 1; fi
+# "docker run … -v HOST:/b … czf /b/NAME" -> create HOST/NAME, like the real tar would
+if [ "$1" = run ] && [[ "$*" == *" czf /b/"* ]]; then
+  host=""; prev=""
+  for a in "$@"; do
+    [ "$prev" = "-v" ] && [[ "$a" == *":/b" ]] && host="${a%:/b}"
+    [[ "$a" == /b/* ]] && [ -n "$host" ] && echo x > "$host/${a#/b/}"
+    prev="$a"
+  done
+fi
 case "$*" in
   *"compose build"*) [ "${FAKE_DOCKER_BUILD:-ok}" = ok ] || exit 1 ;;
   *"inspect --format {{.State.Health.Status}}"*) echo "${FAKE_DOCKER_HEALTH:-healthy}" ;;
+  *"image inspect --format {{.Id}}"*) echo "sha256:new" ;;
+  *"inspect --format {{.Image}}"*) echo "sha256:new" ;;
+  *"exec"*"heartbeat"*) echo "${FAKE_DOCKER_BOOT:-9999999999} 0" ;;
   *"image inspect"*) exit 0 ;;
 esac
 exit 0

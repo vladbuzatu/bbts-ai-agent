@@ -25,11 +25,24 @@ def test_lost_session_starts_fresh_and_catches_up(make_orch, monkeypatch):
 
 
 # 2. Recovery from corrupted state
-def test_corrupted_state_file_does_not_crash(make_orch, base):
+def test_corrupted_state_file_falls_back_to_last_good_copy(make_orch, base):
+    o = make_orch()
+    o.state.session_id = "s-1"
+    o._save_state()
+    o.state.session_id = "s-2"
+    o._save_state()                                       # state.json = s-2, state.json.bak = s-1
+    (base / "data" / "state.json").write_text("{not json")
+    o2 = make_orch()
+    assert o2.state.session_id == "s-1" and o2.status()
+
+
+def test_unreadable_state_and_backup_stop_the_bot(make_orch, base):
+    import pytest
     (base / "data").mkdir(exist_ok=True)
     (base / "data" / "state.json").write_text("{not json")
-    o = make_orch()
-    assert o.state.session_id is None and o.status()
+    (base / "data" / "state.json.bak").write_text("also broken")
+    with pytest.raises(RuntimeError, match="won't start with an empty state"):
+        make_orch()
 
 
 # 3. Claude errors and usage limits

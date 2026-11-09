@@ -204,7 +204,7 @@ class ProjectRepos:
                 f"/project push {name} opens the pull request.")
 
     # --------------------------------------------------------------- publish
-    async def publish(self, name: str, title: str = "", body: str = "") -> str:
+    async def publish(self, name: str, title: str = "", body: str = "", allow_workflows: bool = False) -> str:
         """Push the agents' current feature branch and open/update its pull request."""
         info = self.o.project_info(name) if name == self.o.main_name else self._info(name)
         if not info or not info.get("repo"):
@@ -218,6 +218,9 @@ class ProjectRepos:
         if code != 0 or not BRANCH_RE.match(branch) or branch == "HEAD":
             return f"⚠️ Couldn't tell which branch the agents are on in {info['path']}/ ({branch[:80]})."
         target = WORK_BRANCH if branch == base else branch       # never push the base branch itself
+        if not re.match(r"^(feature|fix|agents)/", target):
+            return (f"⚠️ Not pushed: the agents are on '{branch}'. The bot only publishes feature/…, fix/… or "
+                    "agents/… branches (so it can never overwrite other branches on GitHub).")
         code, status = await self._agit(folder, "status", "--porcelain")
         uncommitted = len([line for line in status.splitlines() if line.strip()]) if code == 0 else 0
         code, out = await self._x(name, "git", "-C", m, "fetch", "-q", "--no-tags", f"file://{folder.resolve()}",
@@ -229,7 +232,19 @@ class ProjectRepos:
         if code == 0 and ahead.strip() == "0":
             return (f"Nothing new to publish: {branch} has no commits beyond {base}."
                     + (f" ({uncommitted} uncommitted change(s): ask the PM to commit them.)" if uncommitted else ""))
-        hits = await self._new_secrets(name, m, base, target)
+        if target not in info.get("pushed_branches", []):
+            code, remote = await self._x(name, "git", "-C", m, "ls-remote", "--heads", "origin", target)
+            if code == 0 and remote.strip():
+                return (f"⚠️ Not pushed: {target} already exists on GitHub and wasn't made by the bot. "
+                        "Ask the PM to use a new branch name.")
+        workflows = await self._touches_workflows(m, base, target)
+        if workflows and not allow_workflows:
+            return ("⛔ Not pushed: these commits change GitHub Actions workflows ("
+                    + ", ".join(workflows[:4]) + "). Workflows run with the repo's secrets, so they need your OK: "
+                    f"review them, then send /project push {name} workflows.")
+        hits, err = await self._new_secrets(name, m, base, target)
+        if err:
+            return f"⛔ Not pushed: {err}, so the commits couldn't be checked for secrets."
         if hits:
             self.o._log(f"PROJECT PUSH BLOCKED {name}: secret-like strings {hits}")
             return ("⛔ Not pushed: the new commits contain something that looks like a secret key "
@@ -249,6 +264,12 @@ class ProjectRepos:
             url = out.strip().splitlines()[-1] if code == 0 and out.strip() else ""
             if code != 0:
                 return f"⬆️ Pushed {target}, but couldn't open the pull request: {out[-300:]}"
+        rec = self.o.state.projects.get(name)
+        if rec is not None:
+            pushed = rec.setdefault("pushed_branches", [])
+            if target not in pushed:
+                pushed.append(target)
+            self.o._save_state()
         self.o._log(f"PROJECT PUSH {name} -> {repo}:{target} ({ahead.strip()} commits)")
         extra = f" ({uncommitted} uncommitted change(s) not included.)" if uncommitted else ""
         try:
@@ -257,35 +278,80 @@ class ProjectRepos:
             self.o._log(f"PR card failed: {e!r}")
         return f"⬆️ {ahead.strip()} commit(s) on {target}. Review and merge: {url}{extra}"
 
-    async def _new_secrets(self, name: str, m: str, base: str, target: str) -> list[str]:
-        """Secret-looking strings the agents ADDED that aren't already on the base branch
-        (e.g. a public Maps browser key that the repo has always had is not news)."""
-        code, diff = await self._x(name, "git", "-C", m, "diff", "--no-color", "-U0", f"{base}...{target}")
-        added = "\n".join(line[1:] for line in diff.splitlines() if line.startswith("+") and not line.startswith("+++"))
-        found = set(SECRET_RE.findall(added))
-        found |= await self._gitleaks(name, m, base, target)
+    async def _git_bytes(self, m: str, *args: str, stdin: bytes | None = None) -> tuple[int, bytes]:
+        """git on a bot-owned bare mirror, with stdin, raw bytes out (root; never an agent folder)."""
+        proc = await asyncio.create_subprocess_exec(
+            "git", "-C", m, *args, stdin=asyncio.subprocess.PIPE if stdin is not None else None,
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+        out, _ = await proc.communicate(stdin)
+        return proc.returncode, out
+
+    async def _range(self, m: str, base: str, target: str) -> tuple[str, list[str]]:
+        code, _ = await self._git_bytes(m, "rev-parse", "--verify", "-q", f"refs/heads/{base}")
+        return ("ok", [target, f"^refs/heads/{base}"]) if code == 0 else ("no-base", [target])
+
+    async def _new_secrets(self, name: str, m: str, base: str, target: str) -> tuple[list[str], str | None]:
+        """Secret-looking strings in ANY file version the new commits introduce (also files added and
+        removed again, and binary files), unless the value is already on the base branch.
+        Returns (findings, error). Any error means: don't push (fail closed)."""
+        has_base, rev = await self._range(m, base, target)
+        code, objs = await self._git_bytes(m, "rev-list", "--objects", *rev)
+        if code != 0:
+            return [], "couldn't list the new commits"
+        shas = [line.split(b" ", 1)[0] for line in objs.splitlines() if line.strip()]
+        code, kinds = await self._git_bytes(m, "cat-file", "--batch-check=%(objectname) %(objecttype) %(objectsize)",
+                                            stdin=b"\n".join(shas) + b"\n")
+        if code != 0:
+            return [], "couldn't read the new files"
+        blobs = [ln.split()[0] for ln in kinds.splitlines()
+                 if len(ln.split()) == 3 and ln.split()[1] == b"blob" and int(ln.split()[2]) <= 20 * 1024 * 1024]
+        found: set[str] = set()
+        for i in range(0, len(blobs), 500):
+            code, data = await self._git_bytes(m, "cat-file", "--batch", stdin=b"\n".join(blobs[i:i + 500]) + b"\n")
+            if code != 0:
+                return [], "couldn't read the new files"
+            found |= set(SECRET_RE.findall(data.decode("latin-1")))
+        leaks, err = await self._gitleaks(name, m, base if has_base == "ok" else "", target)
+        if err:
+            return [], err
+        found |= leaks
         new = []
         for value in sorted(found):
-            code, _ = await self._x(name, "git", "-C", m, "grep", "-q", "-F", value, base)
-            if code != 0:                       # not anywhere on the base branch: really new
-                new.append(value[:12] + "…")
-        return new
+            if has_base == "ok":
+                code, _ = await self._git_bytes(m, "grep", "-q", "-F", "-e", value, f"refs/heads/{base}")
+                if code == 0:
+                    continue                    # already on main: not something the agents added
+            new.append(value[:12] + "…")
+        return new, None
 
-    async def _gitleaks(self, name: str, m: str, base: str, target: str) -> set[str]:
+    async def _gitleaks(self, name: str, m: str, base: str, target: str) -> tuple[set[str], str | None]:
         """gitleaks' rules (hundreds of key formats) over the new commits, when it's installed."""
         if not shutil.which("gitleaks"):
-            return set()
+            return set(), None
         import json as _json
-        report = self.o.cfg.data_dir / f"gitleaks-{name}.json"
+        import tempfile
+        tmp = Path(tempfile.mkdtemp(dir=self.o.cfg.data_dir))
+        report = tmp / "gitleaks.json"
         try:
-            await self._x(name, "gitleaks", "git", m, "--log-opts", f"{base}..{target}", "--no-banner",
-                          "--report-format", "json", "--report-path", str(report), "--exit-code", "0", timeout=300)
-            findings = _json.loads(report.read_text()) if report.exists() else []
-        except (OSError, ValueError):
-            return set()
+            code, out = await self._x(name, "gitleaks", "git", m, "--log-opts", f"{base}..{target}" if base else target,
+                                      "--no-banner", "--report-format", "json", "--report-path", str(report),
+                                      "--exit-code", "0", timeout=300)
+            if code != 0 or not report.exists():
+                return set(), f"the secret scanner failed ({out[-150:]})"
+            findings = _json.loads(report.read_text() or "[]")
+        except (OSError, ValueError) as e:
+            return set(), f"the secret scanner failed ({e})"
         finally:
-            report.unlink(missing_ok=True)
-        return {f.get("Secret", "") for f in findings if len(f.get("Secret", "")) >= 8}
+            shutil.rmtree(tmp, ignore_errors=True)
+        return {f.get("Secret", "") for f in findings if len(f.get("Secret", "")) >= 8}, None
+
+    async def _touches_workflows(self, m: str, base: str, target: str) -> list[str]:
+        has_base, rev = await self._range(m, base, target)
+        if has_base == "ok":
+            code, out = await self._git_bytes(m, "diff", "--name-only", f"refs/heads/{base}...{target}")
+        else:
+            code, out = await self._git_bytes(m, "ls-tree", "-r", "--name-only", target)
+        return [f for f in out.decode(errors="replace").splitlines() if f.startswith(".github/workflows/")]
 
     # ------------------------------------------------------------------ pull
     async def pull(self, name: str) -> str:
@@ -346,10 +412,10 @@ class ProjectRepos:
         sha = sha.strip()
         if code != 0 or (sha == st.get("main_sha") and not force):
             return None
-        tmp = Path("/tmp") / f"lab-export-{sha[:12]}"
-        shutil.rmtree(tmp, ignore_errors=True)
-        tmp.mkdir(parents=True)
-        tar = tmp.with_suffix(".tar")
+        import tempfile
+        work = Path(tempfile.mkdtemp(dir=self.o.cfg.data_dir))      # root-only: no symlink games
+        tmp, tar = work / "tree", work / "export.tar"
+        tmp.mkdir()
         try:
             code, out = await self.o._exec("git", "-C", m, "archive", "-o", str(tar), sha)
             if code != 0:
@@ -360,8 +426,7 @@ class ProjectRepos:
             self.o._log(f"LAB REFRESH failed: {e}")
             return None
         finally:
-            shutil.rmtree(tmp, ignore_errors=True)
-            tar.unlink(missing_ok=True)
+            shutil.rmtree(work, ignore_errors=True)
         st.update({"source": f"GitHub {base}", "sha": sha, "main_sha": sha, "at": time.time()})
         self.o._save_state()
         self.o._log(f"LAB REFRESH {info['repo']}@{sha[:12]} ({n} file(s) changed)")

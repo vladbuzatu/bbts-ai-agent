@@ -152,3 +152,56 @@ def test_gitleaks_catches_formats_the_regex_misses(make_orch, remote, tmp_path):
     sh("git", "add", "-A", cwd=folder)
     sh("git", "-c", "user.email=a@b", "-c", "user.name=a", "commit", "-qm", "pay", cwd=folder)
     assert run(o.repos.publish("carstage")).startswith("⛔ Not pushed")
+
+
+def _feature(folder, branch="feature/x"):
+    sh("git", "switch", "-q", "-c", branch, cwd=folder)
+
+
+def _commit(folder, path, text, msg):
+    p = folder / path
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(text)
+    sh("git", "add", "-A", cwd=folder)
+    sh("git", "-c", "user.email=a@b", "-c", "user.name=a", "commit", "-qm", msg, cwd=folder)
+
+
+def test_secret_added_then_removed_is_still_caught(make_orch, remote):
+    o = make_orch()
+    o.cfg.github_token = "t"
+    run(o.repos.link("carstage", "vlad/carstage"))
+    folder = o.cfg.workspace / "carstage"
+    _feature(folder)
+    key = "AKIA" + "QZXCVBNMASDFGHJK"
+    _commit(folder, "cfg.py", f"KEY = '{key}'\n", "add")
+    _commit(folder, "cfg.py", "KEY = os.environ['KEY']\n", "remove")       # gone from the final files…
+    assert run(o.repos.publish("carstage")).startswith("⛔ Not pushed")      # …but still in history
+
+
+def test_only_feature_branches_and_no_unapproved_workflows(make_orch, remote):
+    o = make_orch()
+    o.cfg.github_token = "t"
+    run(o.repos.link("carstage", "vlad/carstage"))
+    folder = o.cfg.workspace / "carstage"
+    _feature(folder, "release")
+    _commit(folder, "a.txt", "x", "a")
+    assert "only publishes feature/" in run(o.repos.publish("carstage"))
+    sh("git", "switch", "-q", "-c", "feature/ci", cwd=folder)
+    _commit(folder, ".github/workflows/x.yml", "on: push\n", "ci")
+    out = run(o.repos.publish("carstage"))
+    assert out.startswith("⛔ Not pushed") and "workflows" in out
+    assert "on feature/ci" in run(o.repos.publish("carstage", allow_workflows=True))
+
+
+def test_never_overwrites_a_branch_the_bot_didnt_create(make_orch, remote, tmp_path):
+    seed = tmp_path / "seed"
+    sh("git", "switch", "-q", "-c", "feature/mine", cwd=seed)
+    _commit(seed, "owner.txt", "owner's work", "owner")
+    sh("git", "push", "-q", "origin", "feature/mine", cwd=seed)
+    o = make_orch()
+    o.cfg.github_token = "t"
+    run(o.repos.link("carstage", "vlad/carstage"))
+    folder = o.cfg.workspace / "carstage"
+    _feature(folder, "feature/mine")
+    _commit(folder, "agent.txt", "agent", "agent")
+    assert "already exists on GitHub" in run(o.repos.publish("carstage"))

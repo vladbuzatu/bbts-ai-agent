@@ -29,29 +29,65 @@ TEAM_PATHS = (".claude/agents", ".claude/skills", "docs/LESSONS.md", "docs/STAND
 MASTER_GITIGNORE = "/projects/\n.ci-logs/\n__pycache__/\n"
 
 
+def _markers(o: "Orchestrator") -> tuple[Path, Path]:
+    return o.cfg.data_dir / "layout-migrated", o.cfg.data_dir / "layout-migrating.json"
+
+
 def migrate_to_master(o: "Orchestrator") -> bool:
-    """Old layout (main repo at the master folder) -> master + projects/. Returns True if it moved."""
+    """Old layout (main repo AT the master folder) -> master + projects/. Returns True if it moved.
+
+    Runs at most once (a marker in the bot's data folder), and is crash-safe: the plan is written first,
+    the main project is assembled in projects/.migrating-<name> and renamed into place at the very end,
+    and an interrupted run is resumed on the next start."""
+    import json
+    if not o.cfg.multi:
+        return False
     master, main = o.cfg.master, o.cfg.workspace
-    if not o.cfg.multi or not (master / ".git").exists() or main.exists():
+    done, plan_file = _markers(o)
+    if done.exists():
         return False
-    if (master / "projects").exists() and not (master / "projects").is_dir():
-        return False
+    if plan_file.exists():
+        plan = json.loads(plan_file.read_text())
+        log.warning("Resuming an interrupted move to the multi-project layout")
+    else:
+        old_layout = (master / ".git").exists() and not (master / "projects").exists() and not main.exists()
+        if not old_layout:
+            done.write_text("not needed\n")
+            return False
+        nested = {}
+        for name, info in o.state.projects.items():
+            rel = (info.get("path") or "").strip("/")
+            if rel and rel != "." and not info.get("main"):
+                nested[name] = rel
+        plan = {"main": main.name, "nested": nested}
+        plan_file.write_text(json.dumps(plan))       # from here on, a crash resumes this exact plan
     log.warning("Moving to the multi-project layout: %s -> %s", master, main)
-    nested = {info["path"].strip("/"): name for name, info in o.state.projects.items()
-              if info.get("path") and "/" not in info["path"].strip("/") and info["path"].strip("/") != "."}
-    main.mkdir(parents=True)
+    staging = master / "projects" / f".migrating-{plan['main']}"
+    staging.mkdir(parents=True, exist_ok=True)
+    tops = {rel.split("/")[0] for rel in plan["nested"].values() if "/" not in rel}
     moved_projects = []
-    for entry in sorted(master.iterdir()):
-        if entry.name == "projects":
-            continue
-        if entry.name in nested and entry.is_dir():
-            name = nested[entry.name]
-            dest = master / "projects" / name
-            shutil.move(str(entry), str(dest))
-            o.state.projects[name]["path"] = f"projects/{name}"
+    # 1. other projects that lived directly in the old repo's folder -> projects/<name>
+    for name, rel in plan["nested"].items():
+        src, dest = master / rel, master / "projects" / name
+        if "/" in rel:
+            continue                                  # deeper paths travel with the main project (below)
+        if src.is_dir() and not dest.exists():
+            shutil.move(str(src), str(dest))
+        if dest.exists():
+            o.state.projects.setdefault(name, {})["path"] = f"projects/{name}"
             moved_projects.append(name)
-        else:
-            shutil.move(str(entry), str(main / entry.name))
+    # 2. everything else -> the main project (staging folder)
+    for entry in sorted(master.iterdir()):
+        if entry.name == "projects" or entry.name in tops:
+            continue
+        shutil.move(str(entry), str(staging / entry.name))
+    for name, rel in plan["nested"].items():           # nested deeper: now inside the main project
+        if "/" in rel:
+            o.state.projects.setdefault(name, {})["path"] = f"projects/{plan['main']}/{rel}"
+    # 3. the main project goes live in one rename
+    if not main.exists():
+        staging.rename(main)
+    o._save_state()
     # The knowledge curator now works on the master's repo: drop its old worktree and any pending
     # proposal made against the main project's repo (it will propose again on its next run).
     wt = o.cfg.curator_worktree or (sandbox.agent_home() / "curator-worktree" if sandbox.separated()
@@ -62,11 +98,13 @@ def migrate_to_master(o: "Orchestrator") -> bool:
     o.state.inbox.append(
         "The workspace is now multi-project. You work from the master folder (/workspace): the team "
         "(.claude/agents, .claude/skills), docs/LESSONS.md and docs/STANDARDS.md live there; every project has "
-        f"its own folder and git repo under projects/ ({', '.join([o.main_name] + moved_projects)}). Each project "
+        f"its own folder and git repo under projects/ ({', '.join([plan['main']] + moved_projects)}). Each project "
         "keeps its own docs/SPEC.md, docs/PROGRESS.md and scripts/verify.sh. Paths you knew as docs/... are now "
-        f"projects/<name>/docs/... (the main project is projects/{o.main_name}).")
+        f"projects/<name>/docs/... (the main project is projects/{plan['main']}).")
     o._save_state()
-    o._log(f"LAYOUT migrated to master + projects/ ({o.main_name}, {', '.join(moved_projects) or 'no others'})")
+    done.write_text("done\n")
+    plan_file.unlink(missing_ok=True)
+    o._log(f"LAYOUT migrated to master + projects/ ({plan['main']}, {', '.join(moved_projects) or 'no others'})")
     return True
 
 

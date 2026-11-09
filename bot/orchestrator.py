@@ -222,6 +222,7 @@ class Orchestrator:
         self.preview_procs: dict[str, asyncio.subprocess.Process] = {}
         self._usage_scope: list[str] | None = None     # which projects the running turn works on
         import layout
+        self._keep_main_project_name()
         layout.migrate_to_master(self)
         self._init_workspace()
         self._sync_infra()
@@ -445,15 +446,29 @@ class Orchestrator:
             sandbox.git("commit", "-q", "-m", "Initial project scaffold", cwd=ws)
 
     def _load_state(self) -> State:
-        if self.state_file.exists():
+        """The state file, else its last good copy. A corrupt state stops the bot rather than silently
+        starting empty (an empty state would forget projects, sessions and pull requests)."""
+        backup = self.state_file.with_suffix(".json.bak")
+        if not self.state_file.exists() and not backup.exists():
+            return State()
+        for f in (self.state_file, backup):
             try:
-                return State(**json.loads(self.state_file.read_text()))
-            except Exception:  # corrupt state: start fresh rather than crash
-                log.exception("Could not read state; starting fresh")
-        return State()
+                return State(**json.loads(f.read_text()))
+            except Exception:
+                log.exception("Could not read %s", f)
+        raise RuntimeError(f"{self.state_file} and its backup are unreadable. Fix or restore them "
+                           "(ops/restore.sh … data) – the bot won't start with an empty state.")
 
     def _save_state(self) -> None:
-        self.state_file.write_text(json.dumps(self.state.__dict__, indent=2))
+        """Atomic: a crash mid-write never leaves a half-written state file."""
+        tmp = self.state_file.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(self.state.__dict__, indent=2))
+        if self.state_file.exists():
+            try:
+                os.replace(self.state_file, self.state_file.with_suffix(".json.bak"))
+            except OSError:
+                pass
+        os.replace(tmp, self.state_file)
 
     def _log(self, line: str) -> None:
         stamp = time.strftime("%Y-%m-%d %H:%M:%S")
@@ -550,6 +565,17 @@ class Orchestrator:
             max_turns=self.cfg.max_turns_per_round,
             model=self.cfg.model,
         )
+
+    def _keep_main_project_name(self) -> None:
+        """The main project's folder name is fixed once chosen: changing GITHUB_REPO later must not
+        point the bot at a new, empty folder (or re-trigger the layout migration)."""
+        if not self.cfg.multi or not self.state.main_project:
+            return
+        if self.cfg.workspace.name != self.state.main_project:
+            kept = self.cfg.master / "projects" / self.state.main_project
+            if kept.exists():
+                log.warning("Main project stays %s (GITHUB_REPO now suggests %s)", kept, self.cfg.workspace.name)
+                self.cfg.workspace = kept
 
     def _announce_once(self, key: str, text: str) -> None:
         """Queue a one-time note for the PM (e.g. a new team standard after an update)."""

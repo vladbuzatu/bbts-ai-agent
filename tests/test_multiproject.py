@@ -189,3 +189,56 @@ def test_deploys_work_per_project(make_orch, monkeypatch):
 
 async def _ver(url):
     return {"https://stg.carstage.ro": "abc1234def", "https://carstage.ro": "0001111"}.get(url)
+
+
+def _old_install(base, name="stocfresh"):
+    master = base / "master"
+    master.mkdir()
+    subprocess.run(["cp", "-r", f"{KIT}/workspace-template/.", str(master)], check=True)
+    sh("git", "init", "-q", "-b", "main", cwd=master)
+    commit_all(master, "history")
+    (master / "carstage" / "docs").mkdir(parents=True)
+    (master / "carstage" / "docs" / "PROGRESS.md").write_text("x")
+    data = base / "data"
+    data.mkdir()
+    (data / "state.json").write_text(json.dumps({"projects": {"carstage": {"path": "carstage"}}}))
+    cfg = orch_mod.Config(workspace=master / "projects" / name, root=master, data_dir=data,
+                          template_dir=KIT / "workspace-template", pm_prompt_file=KIT / "bot/prompts/pm.md",
+                          studio_dir=base / "studio", studio_template=KIT / "studio-template",
+                          curator_worktree=base / "cwt", github_repo=f"vlad/{name}")
+    return master, cfg
+
+
+def test_migration_never_runs_twice_even_if_the_repo_name_changes(base):
+    master, cfg = _old_install(base)
+    o = orch_mod.Orchestrator(cfg, Recorder())
+    assert sh("git", "log", "--format=%s", "-1", cwd=master / "projects" / "stocfresh") == "history"
+    # later the owner changes GITHUB_REPO: the main project must stay where it is
+    cfg2 = orch_mod.Config(**{**cfg.__dict__, "workspace": master / "projects" / "shop", "github_repo": "vlad/shop"})
+    o2 = orch_mod.Orchestrator(cfg2, Recorder())
+    assert o2.cfg.workspace == master / "projects" / "stocfresh"
+    assert not (master / "projects" / "shop").exists()
+    assert (master / "CLAUDE.md").read_text().startswith("# Team memory")      # team repo untouched
+
+
+def test_interrupted_migration_resumes(base, monkeypatch):
+    import layout
+    master, cfg = _old_install(base)
+    real_move, calls = layout.shutil.move, []
+
+    def flaky(src, dst):
+        calls.append(src)
+        if src.endswith("/docs") and len(calls) < 50:
+            raise OSError("simulated crash in the middle")
+        return real_move(src, dst)
+    monkeypatch.setattr(layout.shutil, "move", flaky)
+    import pytest
+    with pytest.raises(OSError):
+        orch_mod.Orchestrator(cfg, Recorder())
+    assert not (master / "projects" / "stocfresh").exists()        # not live yet: nothing half-used
+    monkeypatch.setattr(layout.shutil, "move", real_move)
+    o = orch_mod.Orchestrator(cfg, Recorder())                     # next start finishes the same plan
+    main = master / "projects" / "stocfresh"
+    assert (main / "docs" / "SPEC.md").exists() and sh("git", "log", "--format=%s", "-1", cwd=main) == "history"
+    assert o.state.projects["carstage"]["path"] == "projects/carstage"
+    assert not (master / "projects" / ".migrating-stocfresh").exists()
