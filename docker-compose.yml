@@ -1,0 +1,49 @@
+# Fixed project name: volumes stay "agent-team-kit_*" whatever the folder is called
+# (e.g. after cloning the kit repo as bbts-ai-agent). Don't change it on a running server.
+name: agent-team-kit
+
+services:
+  agents:
+    build: .
+    image: bbts-agents:latest        # update.sh keeps the previous image as bbts-agents:rollback
+    env_file: .env
+    environment:
+      # End-to-end tests run on GitHub and as the final check, not after every round.
+      # Put SKIP_E2E=0 in .env to run them every round.
+      SKIP_E2E: ${SKIP_E2E:-1}
+      TZ: ${TZ:-Europe/Bucharest}
+      CI: "1"   # test runners never start in watch mode
+      LAB_BUDGET_USD: ${LAB_BUDGET_USD:-5}
+    restart: unless-stopped
+    init: true   # reaps finished child processes (no <defunct> pile-up)
+    healthcheck:
+      # The bot touches /data/heartbeat every 20 s while it's alive and answering.
+      test: ["CMD-SHELL", "test $$(( $$(date +%s) - $$(stat -c %Y /data/heartbeat 2>/dev/null || echo 0) )) -lt 120"]
+      interval: 30s
+      timeout: 5s
+      start_period: 90s
+      retries: 3
+    volumes:
+      # Docker-managed volumes: fast on Windows/Mac and no permission fiddling.
+      - workspace:/workspace     # master folder: the team + projects/<name> (each a git repo)
+      - data:/data               # bot state, session id, agent log
+      - claude:/home/agent/.claude   # agent conversation history (survives rebuilds)
+      - studio:/studio           # studio agents, company profile, job folders (not in git)
+      # CarStage code for the Model Lab (on the server: /opt/carstage). Root-owned, so agents can only
+      # read it; the bot updates it from GitHub main or with the owner's approval (/lab sync).
+      - /opt/carstage:/lab/carstage
+      # Host <-> bot control channel: /update requests, update status, backup status (see ops/).
+      - /var/lib/bbts/control:/control
+    ports:
+      # Preview the app from your browser while it's being built.
+      # Bound to localhost: use an SSH tunnel from your laptop (see README).
+      - "127.0.0.1:4200:4200"
+      - "127.0.0.1:8000:8000"
+      - "127.0.0.1:8090:8090"   # read-only dashboard (ssh -L 8090:localhost:8090 …)
+    mem_limit: ${MEM_LIMIT:-3g}
+
+volumes:
+  workspace:
+  data:
+  claude:
+  studio:

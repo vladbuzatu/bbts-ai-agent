@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+backend/db.sqlite3
+backend/staticfiles/
+.pytest_cache/
+.ruff_cache/
+
+# Node / Angular
+node_modules/
+frontend/dist/
+frontend/.angular/
+e2e/test-results/
+e2e/playwright-report/
+
+# Env / secrets
+.env
+*.env
+!.env.example
+
+# OS / editors
+.DS_Store
+.idea/
+.vscode/
+
+# CI failure logs fetched by the bot
+.ci-logs/

@@ -1,0 +1,28 @@
+# Promotes to PRODUCTION exactly the version running on staging. Triggered by the owner
+# with /deploy in Telegram (only the bot holds a GitHub token; the agents have none).
+# The server's deploy gate enforces "production = staging's version", backs up the
+# database first, and rolls back automatically if the new version fails its checks.
+name: deploy-production
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: read
+
+concurrency:
+  group: deploy-production
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Promote staging to production
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+          REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: bash deploy/deploy.sh production

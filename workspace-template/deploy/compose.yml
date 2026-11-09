@@ -1,0 +1,49 @@
+# One environment (staging or production) on the app server.
+# deploy.sh copies this to /opt/app/<env>/compose.yml; secrets live in /opt/app/<env>/.env
+# (created by server-setup.sh, never in git). IMAGE_REPO and TAG come from deploy.sh.
+services:
+  db:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: app
+      POSTGRES_USER: app
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - db:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U app -d app"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    mem_limit: 256m
+
+  backend:
+    image: ${IMAGE_REPO}/backend:${TAG}
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DATABASE_URL: postgres://app:${POSTGRES_PASSWORD}@db:5432/app
+    depends_on:
+      db:
+        condition: service_healthy
+    mem_limit: 384m
+
+  web:
+    image: ${IMAGE_REPO}/web:${TAG}
+    restart: unless-stopped
+    depends_on:
+      - backend
+    networks:
+      default: {}
+      proxy:
+        aliases:
+          - web-${APP_ENV}
+    mem_limit: 64m
+
+networks:
+  proxy:
+    external: true
+
+volumes:
+  db:

@@ -1,0 +1,191 @@
+#!/usr/bin/env bash
+# deploy-gate: the ONLY thing GitHub's deploy key can run on the server.
+# Installed by server-setup.sh to /opt/app/bin/deploy-gate (root-owned), reached via an
+# SSH forced command + a sudo rule for exactly this file. The deploy user has no
+# shell access and is not in the docker group.
+#
+# Commands (one line, from GitHub Actions; the registry token arrives on stdin):
+#   deploy  staging    <tag> <owner/repo> <actor>   deploy a CI-built version to staging
+#   promote production       <owner/repo> <actor>   production := exactly what staging runs
+#   drill   staging          <owner/repo> <actor>   fire drill: broken release -> must roll back
+#   history <staging|production>                    last 15 deployments
+#   status                                          versions currently running
+#
+# Every deploy: lock -> pull -> (production: DB backup) -> migrate -> start ->
+# checks (API health, web page, web->API, protected API refuses anonymous) ->
+# on failure: automatic rollback to the previous version, and a non-zero exit.
+set -uo pipefail
+
+APP=${DEPLOY_GATE_ROOT:-/opt/app}
+umask 077
+die() { echo "REFUSED: $*" >&2; exit 64; }
+log() { echo "[gate] $*"; }
+
+read -r -a ARGS <<< "${1:-${SSH_ORIGINAL_COMMAND:-}}"
+CMD="${ARGS[0]:-}"
+
+valid_env()  { [[ "$1" == staging || "$1" == production ]]; }
+valid_tag()  { [[ "$1" =~ ^[0-9a-f]{7,40}$ ]]; }
+valid_repo() { [[ "$1" =~ ^[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$ ]]; }
+USER_RE='^[A-Za-z0-9_.-]{1,100}(\[bot\])?$'
+valid_user() { [[ "$1" =~ $USER_RE ]]; }
+
+pin_repo() {  # the first repo that deploys here is the only one ever allowed
+  local repo="$1" f="$APP/REPO"
+  if [[ -f "$f" ]]; then
+    [[ "$(cat "$f")" == "$repo" ]] || die "this server only accepts deploys from $(cat "$f")"
+  else
+    echo "$repo" > "$f"
+  fi
+}
+
+record() {  # env tag prev result
+  printf '%s %s tag=%s prev=%s result=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$CMD" "$2" "${3:--}" "$4" \
+    >> "$APP/$1/history.log"
+}
+
+dc() { docker compose -p "app-$ENVN" "${COMPOSE_FILES[@]}" "$@"; }
+
+checks() {  # returns 0 when the running release is healthy
+  local _
+  for _ in $(seq 1 "${GATE_TRIES:-30}"); do
+    if dc exec -T backend python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health/', timeout=3)" >/dev/null 2>&1 \
+       && dc exec -T web wget -q -O /dev/null http://localhost/ >/dev/null 2>&1 \
+       && dc exec -T web wget -q -O /dev/null http://localhost/api/health/ >/dev/null 2>&1; then
+      # protected API must refuse anonymous users (401/403); 404 = no root endpoint, skip
+      local code
+      code=$(dc exec -T backend python -c "
+import urllib.request, urllib.error
+try:
+    urllib.request.urlopen('http://localhost:8000/api/v1/', timeout=3); print(200)
+except urllib.error.HTTPError as e: print(e.code)
+except Exception: print(0)" 2>/dev/null | tr -d '\r')
+      if [[ "$code" == 401 || "$code" == 403 || "$code" == 404 ]]; then
+        return 0
+      fi
+      log "protected API answered $code to an anonymous request"
+      return 1
+    fi
+    sleep "${GATE_SLEEP:-3}"
+  done
+  return 1
+}
+
+release() {  # ENVN TAG PREV -> 0 ok | 2 rolled back | 3 rollback failed | 1 failed, nothing to roll back to
+  local tag="$1" prev="$2"
+  export IMAGE_REPO TAG="$tag"
+  log "pulling $IMAGE_REPO:$tag"
+  dc pull --quiet || { log "pull failed"; record "$ENVN" "$tag" "$prev" pull_failed; return 1; }
+
+  if [[ "$ENVN" == production && "$DRILL" != 1 ]] && dc ps --status running db 2>/dev/null | grep -q db; then
+    local b
+    b="$APP/backups/pre-deploy-production-$(date -u +%Y%m%dT%H%M%SZ)-${prev:-none}.sql.gz"
+    log "backing up the production database -> $b"
+    dc exec -T db pg_dump -U app app | gzip > "$b" || { log "backup failed - not deploying"; rm -f "$b"; record "$ENVN" "$tag" "$prev" backup_failed; return 1; }
+    find "$APP/backups" -name 'pre-deploy-*.sql.gz' -mtime +14 -delete 2>/dev/null
+  fi
+
+  dc up -d db >/dev/null
+  if [[ "$DRILL" != 1 ]]; then
+    log "applying database migrations"
+    if ! dc run --rm -T backend python manage.py migrate --noinput; then
+      log "migrations failed - the running version was NOT replaced"
+      record "$ENVN" "$tag" "$prev" migrate_failed
+      return 1
+    fi
+  fi
+
+  log "starting $tag"
+  dc up -d --remove-orphans
+  if checks; then
+    echo "$tag" > "$APP/$ENVN/DEPLOYED_TAG"
+    [[ -n "$prev" && "$prev" != "$tag" ]] && echo "$prev" > "$APP/$ENVN/PREVIOUS_TAG"
+    record "$ENVN" "$tag" "$prev" ok
+    log "healthy: $ENVN runs $tag"
+    return 0
+  fi
+
+  log "checks FAILED for $tag. Last backend logs:"
+  dc logs --tail 40 backend 2>&1 | sed 's/^/    /'
+  if [[ -z "$prev" ]]; then
+    record "$ENVN" "$tag" "-" failed_no_previous
+    return 1
+  fi
+  log "rolling back to $prev"
+  COMPOSE_FILES=(-f compose.yml)
+  TAG="$prev" dc up -d --remove-orphans
+  if TAG="$prev" checks; then
+    record "$ENVN" "$tag" "$prev" rolled_back
+    log "rolled back: $ENVN runs $prev again. Note: database migrations are not undone (they must stay backward-compatible)."
+    return 2
+  fi
+  record "$ENVN" "$tag" "$prev" rollback_failed
+  log "ROLLBACK FAILED - manual attention needed"
+  return 3
+}
+
+DRILL=0
+COMPOSE_FILES=(-f compose.yml)
+case "$CMD" in
+  deploy)
+    ENVN="${ARGS[1]:-}"; TAGV="${ARGS[2]:-}"; REPO="${ARGS[3]:-}"; ACTOR="${ARGS[4]:-}"
+    [[ "$ENVN" == staging ]] || die "deploy is only for staging; production is reached with 'promote'"
+    valid_tag "$TAGV" || die "bad tag"; valid_repo "$REPO" || die "bad repo"; valid_user "$ACTOR" || die "bad actor" ;;
+  promote)
+    ENVN="${ARGS[1]:-}"; REPO="${ARGS[2]:-}"; ACTOR="${ARGS[3]:-}"
+    [[ "$ENVN" == production ]] || die "promote only targets production"
+    valid_repo "$REPO" || die "bad repo"; valid_user "$ACTOR" || die "bad actor"
+    TAGV="$(cat "$APP/staging/DEPLOYED_TAG" 2>/dev/null)"
+    valid_tag "${TAGV:-x}" || die "nothing healthy is deployed on staging, so there is nothing to promote" ;;
+  drill)
+    ENVN="${ARGS[1]:-}"; REPO="${ARGS[2]:-}"; ACTOR="${ARGS[3]:-}"
+    [[ "$ENVN" == staging ]] || die "drills only run on staging"
+    valid_repo "$REPO" || die "bad repo"; valid_user "$ACTOR" || die "bad actor"
+    TAGV="$(cat "$APP/staging/DEPLOYED_TAG" 2>/dev/null)"
+    valid_tag "${TAGV:-x}" || die "deploy something healthy to staging before running a drill"
+    DRILL=1 ;;
+  history)
+    valid_env "${ARGS[1]:-}" || die "history <staging|production>"
+    tail -n 15 "$APP/${ARGS[1]}/history.log" 2>/dev/null || echo "(no deployments yet)"; exit 0 ;;
+  status)
+    for e in staging production; do echo "$e: $(cat "$APP/$e/DEPLOYED_TAG" 2>/dev/null || echo none)"; done; exit 0 ;;
+  *) die "unknown command" ;;
+esac
+
+pin_repo "$REPO"
+IMAGE_REPO="ghcr.io/${REPO,,}"
+cd "$APP/$ENVN" || die "environment not set up (run server-setup.sh)"
+
+exec 9>"$APP/$ENVN/.lock"
+flock -n 9 || die "another $ENVN deploy is running"
+
+IFS= read -r -t 5 REGISTRY_TOKEN || REGISTRY_TOKEN=""
+if [[ -n "$REGISTRY_TOKEN" ]]; then
+  printf '%s' "$REGISTRY_TOKEN" | docker login ghcr.io -u "$ACTOR" --password-stdin >/dev/null 2>&1 \
+    || log "registry login failed (continuing with cached credentials)"
+fi
+trap 'docker logout ghcr.io >/dev/null 2>&1 || true' EXIT
+
+PREV="$(cat "$APP/$ENVN/DEPLOYED_TAG" 2>/dev/null || true)"
+
+if [[ "$DRILL" == 1 ]]; then
+  # Simulated broken release: same images, but the backend can't start.
+  printf 'services:\n  backend:\n    command: ["sh", "-c", "echo drill: simulated broken release; exit 1"]\n' > "$APP/$ENVN/drill.override.yml"
+  COMPOSE_FILES=(-f compose.yml -f drill.override.yml)
+  release "$TAGV" "$TAGV"; rc=$?
+  rm -f "$APP/$ENVN/drill.override.yml"
+  if [[ $rc == 2 ]]; then
+    echo "DRILL PASSED: the broken release failed its checks and staging was rolled back automatically."
+    exit 0
+  fi
+  echo "DRILL FAILED (code $rc): the broken release was not rolled back as expected."; exit 1
+fi
+
+release "$TAGV" "$PREV"; rc=$?
+case $rc in
+  0) echo "DEPLOYED: $ENVN now runs $TAGV" ;;
+  2) echo "ROLLED BACK: $TAGV failed its checks; $ENVN runs $PREV again." ;;
+  3) echo "ROLLBACK FAILED: $ENVN may be down - check the server." ;;
+  *) echo "FAILED: $TAGV was not deployed to $ENVN." ;;
+esac
+exit $rc

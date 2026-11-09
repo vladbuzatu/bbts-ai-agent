@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+# Fake docker for testing deploy-gate. State in $FAKE_STATE.
+S="${FAKE_STATE:?}"; mkdir -p "$S"
+echo "docker $*" >> "$S/calls"
+case "$1" in
+  login) cat >/dev/null; exit 0 ;;
+  logout|image) exit 0 ;;
+  compose) shift ;;
+  *) exit 0 ;;
+esac
+P=""; OVR=0
+while [[ "$1" == -p || "$1" == -f ]]; do
+  if [[ "$1" == -p ]]; then P="$2"; else [[ "$2" == drill.override.yml ]] && OVR=1; fi; shift 2
+done
+sub="$1"; shift
+healthy() { local t; t=$(cat "$S/$P.running" 2>/dev/null); [[ -n "$t" && "$t" != badc0de && "$(cat "$S/$P.ovr" 2>/dev/null)" != 1 ]]; }
+case "$sub" in
+  pull) [[ "$TAG" == 0badfee ]] && { echo "pull error"; exit 1; }; exit 0 ;;
+  ps) [[ -f "$S/$P.db" ]] && echo "db"; exit 0 ;;
+  up) if [[ "$1" == -d && "$2" == db ]]; then touch "$S/$P.db"; else echo "$TAG" > "$S/$P.running"; echo "$OVR" > "$S/$P.ovr"; fi; exit 0 ;;
+  run) [[ "$TAG" == baadf00d ]] && { echo "migration error"; exit 1; }; echo "$TAG" >> "$S/$P.migrated"; exit 0 ;;
+  exec) svc="$2"
+        if [[ "$*" == *pg_dump* ]]; then echo "-- dump of $(cat "$S/$P.running")"; exit 0; fi
+        healthy || exit 1
+        if [[ "$*" == *"api/v1/"* ]]; then echo 401; fi; exit 0 ;;
+  logs) echo "Traceback: backend crashed"; exit 0 ;;
+esac
+exit 0

@@ -1,0 +1,6 @@
+# Pinned to the versions the kit was tested with. Update deliberately:
+# change a version, rebuild, and run the bot's tests (docker compose run --rm agents pytest -q /app/tests).
+claude-agent-sdk==0.2.172
+python-telegram-bot==22.8
+tzdata==2026.6
+pytest==9.2.0

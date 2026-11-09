@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# Fake GitHub CLI for the bot's tests. Behaviour via env:
+#   FAKE_GH_LOG       file to append calls to
+#   FAKE_GH_RESULT    success | failure  (conclusion of runs)
+#   FAKE_GH_FAILLOG   text returned by --log-failed
+echo "gh $*" >> "${FAKE_GH_LOG:-/dev/null}"
+R="${FAKE_GH_RESULT:-success}"
+case "$*" in
+  *"workflow run"*) exit 0 ;;
+  *"run view"*"--log-failed"*) echo "${FAKE_GH_FAILLOG:-build failed: ModuleNotFoundError: No module named 'whitenoise'}"; exit 0 ;;
+  *"run view"*) echo "{\"databaseId\":77,\"status\":\"completed\",\"conclusion\":\"$R\",\"url\":\"https://github.example/run/77\",\"headSha\":\"abc1234def\"}"; exit 0 ;;
+  *"pr list"*) exit 0 ;;
+  *"pr create"*) echo "https://github.example/pull/7"; exit 0 ;;
+  *"run list"*) echo "[{\"databaseId\":77,\"status\":\"in_progress\",\"conclusion\":\"\",\"url\":\"https://github.example/run/77\",\"headSha\":\"abc1234def\",\"createdAt\":\"2099-01-01T00:00:00Z\",\"event\":\"push\",\"displayTitle\":\"T-05: import\"}]"; exit 0 ;;
+esac
+exit 0
