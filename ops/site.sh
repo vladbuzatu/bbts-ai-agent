@@ -148,13 +148,45 @@ caddy_point() {  # caddy_point <upstream or empty>: rewrite our block in place (
 }
 
 # ---------------------------------------------------------------- compose helpers
-dc_args() {  # dc_args <project> <id> [override] -> DC=(docker compose ...) in a clean environment
+resolver() {  # an image with just the host's Compose binary: resolves compose files in a jail
+  local bin="" c tag tmp
+  for c in /usr/libexec/docker/cli-plugins/docker-compose /usr/lib/docker/cli-plugins/docker-compose \
+           /usr/local/lib/docker/cli-plugins/docker-compose /usr/local/libexec/docker/cli-plugins/docker-compose \
+           "${HOME:-/root}/.docker/cli-plugins/docker-compose"; do
+    [ -x "$c" ] && { bin="$c"; break; }
+  done
+  [ -n "$bin" ] || return 1
+  tag="bbts-site-resolver:$(sha256sum "$bin" | cut -c1-12)"
+  if ! docker image inspect "$tag" >/dev/null 2>&1; then
+    tmp=$(mktemp -d)
+    cp "$bin" "$tmp/docker-compose"
+    printf 'FROM scratch\nCOPY docker-compose /docker-compose\nENTRYPOINT ["/docker-compose"]\n' > "$tmp/Dockerfile"
+    docker build -q -t "$tag" "$tmp" >/dev/null || { rm -rf "$tmp"; return 1; }
+    rm -rf "$tmp"
+  fi
+  printf '%s' "$tag"
+}
+
+resolve() {  # resolve <project> <id>: the compose file as Compose sees it, resolved where ONLY the project's
+  # code and its generated env files exist (no host files, no network). env_file, include, extends or
+  # anything else pointing outside the project simply isn't there, whatever the Compose version.
+  local p="$1" i="$2" src="$ROOT/$1/src-$2" img
+  img=$(resolver) || { echo "couldn't prepare the compose resolver (is the Compose plugin installed?)" >&2; return 1; }
+  local mounts=(-v "$src:$src:ro" -v "$ROOT/$p/site.env:$ROOT/$p/site.env:ro")
+  local envs=(--env-file "$ROOT/$p/site.env")
+  if [ -f "$ROOT/$p/secrets.env" ]; then
+    mounts+=(-v "$ROOT/$p/secrets.env:$ROOT/$p/secrets.env:ro"); envs+=(--env-file "$ROOT/$p/secrets.env")
+  fi
+  docker run --rm --network none --read-only --tmpfs /tmp --cap-drop ALL --security-opt no-new-privileges \
+    -e HOME=/tmp -e DOCKER_CONFIG=/tmp "${mounts[@]}" -w "$src" "$img" \
+    -p "site-$p" --project-directory "$src" -f "$src/preview/compose.yml" "${envs[@]}" config --format json
+}
+
+dc_args() {  # dc_args <project> <id> [override] -> DC=(docker compose ...) on the RESOLVED file, clean environment
   local p="$1" i="$2" ov="${3:-}"
   DC=(env -i PATH="$PATH" HOME="${HOME:-/root}" docker compose --progress plain -p "site-$p"
-      --project-directory "$ROOT/$p/src-$i" -f "$ROOT/$p/src-$i/preview/compose.yml")
+      --project-directory "$ROOT/$p/src-$i" -f "$ROOT/$p/compose-$i.json" --env-file /dev/null)
   [ -n "$ov" ] && DC+=(-f "$ov")
-  DC+=(--env-file "$ROOT/$p/site.env")
-  [ -f "$ROOT/$p/secrets.env" ] && DC+=(--env-file "$ROOT/$p/secrets.env")
   return 0
 }
 dc() { dc_args "$1" "$2" "${3:-}"; shift 3; "${DC[@]}" "$@"; }   # nothing from the host's environment leaks in
@@ -199,7 +231,7 @@ cleanup() {  # keep the running version and the one before it (for rollback); dr
     [ -d "$d" ] || continue
     i="${d##*/src-}"
     [ "$i" = "$keep1" ] || [ "$i" = "$keep2" ] && continue
-    rm -rf "$d" "$ROOT/$p/override-$i.json"
+    rm -rf "$d" "$ROOT/$p/override-$i.json" "$ROOT/$p/compose-$i.json"
   done
   docker images --format '{{.Repository}}:{{.Tag}}' | grep "^bbts-site-$p-" | while read -r img; do
     i="${img##*:}"
@@ -231,12 +263,13 @@ deploy() {
   site_env "$PROJECT"
 
   local cfg verdict
-  cfg=$(dc "$PROJECT" "$ID" "" config --no-env-resolution --format json 2>"$ROOT/$PROJECT/config.err") \
-    || fail "preview/compose.yml has errors: $(tail -3 "$ROOT/$PROJECT/config.err")"
+  cfg=$(resolve "$PROJECT" "$ID" 2>"$ROOT/$PROJECT/config.err") \
+    || fail "preview/compose.yml has errors: $(grep -v '^\s*$' "$ROOT/$PROJECT/config.err" | tail -3)"
   verdict=$(printf '%s' "$cfg" | python3 "$CHECK" check "$src") || fail "couldn't check preview/compose.yml"
   if [ "$(printf '%s' "$verdict" | python3 -c 'import json,sys;print(json.load(sys.stdin)["ok"])')" != True ]; then
     fail "preview/compose.yml isn't allowed on this server: $(printf '%s' "$verdict" | python3 -c 'import json,sys;print("; ".join(json.load(sys.stdin)["errors"]))')"
   fi
+  printf '%s\n' "$cfg" > "$ROOT/$PROJECT/compose-$ID.json"     # what runs is exactly what was checked
   local port
   port=$(printf '%s' "$verdict" | python3 -c 'import json,sys;print(json.load(sys.stdin)["port"])')
   printf '%s' "$cfg" | python3 "$CHECK" override "$PROJECT" "$ID" "site-$PROJECT" "$MEM" > "$ov" || fail "couldn't prepare the limits"

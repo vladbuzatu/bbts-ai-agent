@@ -15,7 +15,7 @@ pass=0
 
 leftovers() {  # containers, volumes and images of this test (also from an interrupted earlier run)
   local p ids
-  for p in alpha beta evil; do
+  for p in alpha beta evil leak; do
     mapfile -t ids < <(docker ps -aq --filter "label=com.docker.compose.project=site-$p")
     if [ "${#ids[@]}" -gt 0 ]; then docker rm -f "${ids[@]}" >/dev/null 2>&1 || true; fi
     docker volume ls -q --filter "label=com.docker.compose.project=site-$p" | xargs -r docker volume rm >/dev/null 2>&1 || true
@@ -139,15 +139,44 @@ services:
     privileged: true
     ports: ["2222:22"]
     volumes: ["/:/host"]
-    env_file: [/etc/hostname]
 EOF
 git -C "$T/repos/evil" -c user.email=t@t -c user.name=t commit -qam evil
 request deploy evil
 status_is failed || die "unsafe compose was accepted"
-for w in privileged ports "bind mount" env_file; do grep -q "$w" "$T/control/site-status.json" || die "not reported: $w"; done
+for w in privileged ports "bind mount"; do grep -q "$w" "$T/control/site-status.json" || die "not reported: $w"; done
 [ -z "$(docker ps -q --filter label=com.docker.compose.project=site-evil)" ] || die "evil is running"
 [ "$(get /)" = "beta v1" ] || die "site changed"
-ok "refused (privileged, ports, bind mount, host env file); beta still live"
+ok "refused (privileged, ports, bind mount); beta still live"
+
+echo "== host files can't be read through env_file / include / extends"
+SECRET_FILE=/tmp/bbts-e2e-host-secret.env
+echo "LEAK=host-secret-value" > "$SECRET_FILE"
+for variant in required include extends; do
+  case $variant in
+    required) printf 'services:\n  web:\n    image: caddy:2-alpine\n    env_file: [%s]\n' "$SECRET_FILE" ;;
+    include)  printf 'include: [%s]\nservices:\n  web:\n    image: caddy:2-alpine\n' "$SECRET_FILE" ;;
+    extends)  printf 'services:\n  web:\n    extends: {file: %s, service: x}\n' "$SECRET_FILE" ;;
+  esac > "$T/repos/evil/preview/compose.yml"
+  git -C "$T/repos/evil" -c user.email=t@t -c user.name=t commit -qam "$variant"
+  request deploy evil
+  status_is failed || die "$variant: a file outside the project was used"
+done
+[ "$(get /)" = "beta v1" ] || die "site changed"
+ok "a required host env file, include or extends from outside the project: refused"
+
+project leak "leak"
+printf 'services:\n  web:\n    build: ./web\n    env_file: [{path: %s, required: false}]\n' "$SECRET_FILE" \
+  > "$T/repos/leak/preview/compose.yml"
+printf ':80 {\n\trespond "leak=[{env.LEAK}]"\n}\n' > "$T/repos/leak/web/Caddyfile"
+git -C "$T/repos/leak" -c user.email=t@t -c user.name=t commit -qam leak
+request deploy leak
+status_is ok || die "optional env_file deploy failed"
+[ "$(get /)" = "leak=[]" ] || die "a host file's value reached the container: $(get /)"
+ok "an optional host env file is simply not there (no value leaks)"
+project beta "beta v1"
+request deploy beta
+[ "$(get /)" = "beta v1" ] || die "redeploy beta failed"
+rm -f "$SECRET_FILE"
 
 echo "== watchdog puts our block back"
 printf 'http://staging.localhost {\n\trespond "staging ok"\n}\n' > "$T/proxy/Caddyfile.new"
