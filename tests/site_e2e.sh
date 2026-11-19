@@ -13,19 +13,25 @@ CADDY=bbts-e2e-caddy
 made_net=0
 pass=0
 
-cleanup() {
+leftovers() {  # containers, volumes and images of this test (also from an interrupted earlier run)
+  local p ids
   for p in alpha beta evil; do
     mapfile -t ids < <(docker ps -aq --filter "label=com.docker.compose.project=site-$p")
-    [ "${#ids[@]}" -gt 0 ] && docker rm -f "${ids[@]}" >/dev/null 2>&1
-    docker volume ls -q --filter "label=com.docker.compose.project=site-$p" | xargs -r docker volume rm >/dev/null 2>&1
-    docker network rm "site-${p}_default" >/dev/null 2>&1
+    if [ "${#ids[@]}" -gt 0 ]; then docker rm -f "${ids[@]}" >/dev/null 2>&1 || true; fi
+    docker volume ls -q --filter "label=com.docker.compose.project=site-$p" | xargs -r docker volume rm >/dev/null 2>&1 || true
+    docker network rm "site-${p}_default" >/dev/null 2>&1 || true
   done
-  docker rm -f "$CADDY" >/dev/null 2>&1
-  docker images --format '{{.Repository}}:{{.Tag}}' | grep '^bbts-site-' | xargs -r docker rmi -f >/dev/null 2>&1
-  [ "$made_net" = 1 ] && docker network rm proxy >/dev/null 2>&1
+  docker rm -f "$CADDY" >/dev/null 2>&1 || true
+  docker images --format '{{.Repository}}:{{.Tag}}' | grep '^bbts-site-' | xargs -r docker rmi -f >/dev/null 2>&1 || true
+  return 0
+}
+cleanup() {
+  leftovers
+  if [ "$made_net" = 1 ]; then docker network rm proxy >/dev/null 2>&1 || true; fi
   rm -rf "$T"
   return 0
 }
+leftovers
 trap cleanup EXIT
 
 ok() { echo "  ✓ $1"; pass=$((pass + 1)); }
