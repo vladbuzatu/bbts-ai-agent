@@ -77,40 +77,84 @@ def _git(root: Path, *args: str) -> tuple[int, str]:
     return r.returncode, (r.stdout or r.stderr).strip()
 
 
-def request_deploy(name: str, root: Path, title: str = "") -> tuple[str, str | None]:
-    """Snapshot the project's committed code and ask the host to deploy it. (message, request id)"""
+REF_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._/-]{0,99}")
+
+
+def _resolve(ref: str | None, sources: list[tuple[str, Path]]) -> tuple[str, Path, str] | None:
+    """(commit, git dir, where) for a branch/tag/commit: the team's copy first, then GitHub's."""
+    for where, gitdir in sources:
+        if not (gitdir / "HEAD").exists() and not (gitdir / ".git").exists():
+            continue
+        cands = ["HEAD"] if not ref else [f"refs/heads/{ref}", f"refs/remotes/origin/{ref}", f"refs/tags/{ref}", ref]
+        for cand in cands:
+            code, sha = _git(gitdir, "rev-parse", "--verify", "--quiet", f"{cand}^{{commit}}")
+            if code == 0 and sha:
+                return sha, gitdir, where
+    return None
+
+
+def request_deploy(name: str, root: Path, title: str = "", ref: str | None = None,
+                   github: Path | None = None) -> tuple[str, str | None]:
+    """Snapshot committed code (the project's current branch, or `ref`: a branch, tag or commit from the
+    team's copy or GitHub) and ask the host to deploy it. (message, request id)"""
     if p := problem():
         return p, None
     if b := busy():
         return b + " Try again when it's done (/site shows progress).", None
     if not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,29}", name or ""):
         return f"{name!r} isn't a valid project name.", None
+    if ref and (not REF_RE.fullmatch(ref) or ".." in ref):
+        return f"{ref!r} doesn't look like a branch, tag or commit.", None
     if not (root / ".git").exists():
         return f"{name} has no git repository at {root}.", None
-    code, commit = _git(root, "rev-parse", "HEAD")
-    if code != 0:
+    sources = [("the team's copy", root)] + ([("GitHub", github)] if github else [])
+    found = _resolve(ref, sources)
+    if not found:
+        if ref:
+            return (f"{name} has no branch, tag or commit {ref!r} (looked in the team's copy"
+                    f"{' and on GitHub' if github else ''})."), None
         return f"{name} has no commits yet.", None
-    if _git(root, "cat-file", "-e", f"HEAD:{COMPOSE}")[0] != 0:
-        return (f"{name} has no {COMPOSE} committed yet, so the server doesn't know how to run it. Ask the PM: "
-                f"\"prepare {name} for the preview site\" (see the preview-site skill)."), None
-    _, dirty = _git(root, "status", "--porcelain", "--untracked-files=no")
+    commit, gitdir, where = found
+    if _git(gitdir, "cat-file", "-e", f"{commit}:{COMPOSE}")[0] != 0:
+        return (f"{name}{' (' + ref + ')' if ref else ''} has no {COMPOSE} committed yet, so the server doesn't "
+                f"know how to run it. Ask the PM: \"prepare {name} for the preview site\" "
+                "(see the preview-site skill)."), None
+    dirty = "" if ref else _git(root, "status", "--porcelain", "--untracked-files=no")[1]
     ident = f"{int(time.time())}-{secrets.token_hex(3)}"
     outdir = _control() / "site"
     outdir.mkdir(mode=0o700, exist_ok=True)
-    code, out = _git(root, "archive", "--format=tar", "-o", str(outdir / f"{ident}.tar"), "HEAD")
+    code, out = _git(gitdir, "archive", "--format=tar", "-o", str(outdir / f"{ident}.tar"), commit)
     if code != 0:
         return f"Couldn't snapshot {name}'s code: {out[-300:]}", None
-    _, subject = _git(root, "log", "-1", "--format=%s")
-    req = {"id": ident, "action": "deploy", "project": name, "commit": commit, "title": (title or subject)[:120]}
+    _, subject = _git(gitdir, "log", "-1", "--format=%s", commit)
+    label = f"{ref} " if ref else ""
+    req = {"id": ident, "action": "deploy", "project": name, "commit": commit,
+           "title": (title or (f"[{ref}] " if ref else "") + subject)[:120]}
     tmp = _control() / "site-request.tmp"
     tmp.write_text(json.dumps(req))
-    _write_status(state="queued", message=f"Deploying {name} {commit[:7]}", id=ident, project=name,
+    _write_status(state="queued", message=f"Deploying {name} {label}{commit[:7]}", id=ident, project=name,
                   commit=commit, title=req["title"])
     os.replace(tmp, _control() / "site-request")
     note = "\n⚠️ Uncommitted changes aren't included – only committed work is deployed." if dirty else ""
-    return (f"🚀 Deploying {name} ({commit[:7]} – {subject[:80]}) to {url()}.\n"
+    src = f" from {where}" if ref else ""
+    return (f"🚀 Deploying {name} {label}({commit[:7]} – {subject[:80]}){src} to {url()}.\n"
             f"The server builds it and switches the address once it answers (a few minutes; "
             f"the first build of a project takes longest). I'll report back.{note}"), ident
+
+
+async def deploy(orch, name: str, ref: str | None = None) -> tuple[str, str | None]:
+    """request_deploy for a project of the orchestrator; for a branch, GitHub is fetched first."""
+    _, root = orch.project_root(name)
+    github = None
+    info = orch.project_info(name)
+    if ref and info.get("repo"):
+        github = orch.mirror if info.get("main") else orch.repos.mirror(name)
+        if (github / "HEAD").exists():      # newest branches from GitHub, kept apart from the bot's own refs
+            await orch.repos._x(name, "git", "-C", str(github), "fetch", "-q", "--prune", "origin",
+                                "+refs/heads/*:refs/remotes/origin/*", timeout=300)
+        else:
+            github = None
+    return await asyncio.to_thread(request_deploy, name, root, "", ref or None, github)
 
 
 def request_stop() -> str:
@@ -152,7 +196,7 @@ def summary() -> str:
         lines.append("Nothing deployed yet.")
     if p := problem():
         lines.append(p)
-    lines.append("\n/site <project> deploys · /site log · /site stop")
+    lines.append("\n/site <project> [branch] deploys · /site log · /site stop")
     return "\n".join(lines)
 
 
@@ -189,14 +233,14 @@ def make_tools(orch) -> list:
           "Deploy a project's COMMITTED code to the shared preview site (SITE_DOMAIN) so the owner can see "
           "it – replaces whatever the site showed before. The project needs preview/compose.yml (see "
           ".claude/skills/preview-site). Commit first. Waits up to ~5 minutes; if it's still building, call "
-          "preview_site_status. name: project id (e.g. tstauto).",
-          {"name": str})
+          "preview_site_status. name: project id (e.g. tstauto). branch: optional branch, tag or commit "
+          "(the team's copy first, then GitHub); empty = the project's current branch.",
+          {"name": str, "branch": str})
     async def deploy_preview_site(args):
         name = (args.get("name") or "").strip().lower() or orch.state.active_project or orch.main_name
         if name not in orch.project_names():
             return {"content": [{"type": "text", "text": f"Unknown project {name!r}. Known: {', '.join(orch.project_names())}"}]}
-        _, root = orch.project_root(name)
-        text, ident = await asyncio.to_thread(request_deploy, name, root)
+        text, ident = await deploy(orch, name, (args.get("branch") or "").strip() or None)
         if ident:
             orch._log(f"SITE deploy {name} requested by the agents")
             text = result_text(await wait(ident, 300))

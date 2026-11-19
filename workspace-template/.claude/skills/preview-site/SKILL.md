@@ -5,7 +5,7 @@ description: Put a project on the owner's preview site (one public address, SITE
 
 # The preview site
 
-The server has one public address (SITE_DOMAIN, e.g. `bbts-preview.duckdns.org`) that shows **one
+The server has one public address (SITE_DOMAIN, e.g. `bbts.duckdns.org`) that shows **one
 project at a time**: whatever was deployed last. It's for the owner to look at the work without
 deploying anything themselves. Search engines and AI crawlers are told not to index it.
 
@@ -14,13 +14,15 @@ The server deploys only **committed** code, and only if the project has a `previ
 ## Deploying
 
 1. Commit the work in the project's repo.
-2. Call the team tool `deploy_preview_site` with the project's name (e.g. `tstauto`). It waits up to
-   ~5 minutes; if it's still building, call `preview_site_status` with `wait_minutes: 5`.
+2. Call the team tool `deploy_preview_site` with the project's name (e.g. `tstauto`). By default it
+   deploys the project's current branch; `branch` deploys another branch, tag or commit (looked up in
+   the team's copy first, then on GitHub), without switching branches. It waits up to ~5 minutes; if
+   it's still building, call `preview_site_status` with `wait_minutes: 5`.
 3. When it's live, **check it in the browser** (below) before telling the owner it works.
 4. If it failed, the tool returns the end of the deploy log: fix the cause, commit, deploy again.
    A failed deploy never takes the site down: the previous version keeps running.
 
-The owner can do the same from Telegram: `/site <project>`, `/site`, `/site log`, `/site stop`.
+The owner can do the same from Telegram: `/site <project> [branch]`, `/site`, `/site log`, `/site stop`.
 
 ## preview/compose.yml (one per project, committed)
 

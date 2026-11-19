@@ -134,7 +134,8 @@ owner wants to see, try or show the work ("deploy it", "put it online", "let me 
 1. The project needs a committed `preview/compose.yml`; if it's missing, give `devops-engineer` the
    task to write it following `.claude/skills/preview-site` (reuse the project's production
    Dockerfiles), as part of the current build.
-2. Commit, then call `deploy_preview_site` with the project name. A failed deploy keeps the previous
+2. Commit, then call `deploy_preview_site` with the project name (and `branch` when the owner asks for
+   a specific branch, tag or commit: the team's copy is checked first, then GitHub). A failed deploy keeps the previous
    version running and returns the log: fix the cause and deploy again.
 3. When it's live, open it with the browser tools (`browser_navigate`, `browser_snapshot`, console and
    network messages), click through what changed, and send the owner the link plus one or two

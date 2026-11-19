@@ -48,7 +48,7 @@ Type `/` in the chat for the menu. Many messages also come with **tap-to-answer 
 | `/ask <agent> <question>` | Ask one specialist, read-only |
 | `/undo` | Undo the last finished task (with confirmation) |
 | `/preview` | Run the app on the server to try it via SSH tunnel |
-| `/site [project\|log\|stop]` | Preview site: put a project on your domain, see what's live |
+| `/site [project [branch]\|log\|stop]` | Preview site: put a project on your domain, see what's live |
 | `/verify` · `/push` | Full test run · test and push to GitHub |
 | `/deploy` · `history` · `drill` | Promote staging to production · past deploys · rollback fire drill |
 | `/server` | CPU/RAM/disk, Claude usage window, versions running |
@@ -142,11 +142,12 @@ see the work without deploying anything yourself. Search engines and AI crawlers
 index it (robots.txt + `X-Robots-Tag: noindex`).
 
 **Set up once**
-1. Create a free name at https://www.duckdns.org (e.g. `bbts-preview`) and set its IP to the server's.
-2. In the kit's `.env`: `SITE_DOMAIN=bbts-preview.duckdns.org`, then `docker compose up -d` and
+1. Create a free name at https://www.duckdns.org (e.g. `bbts`) and set its IP to the server's.
+2. In the kit's `.env`: `SITE_DOMAIN=bbts.duckdns.org`, then `docker compose up -d` and
    `sudo ops/install.sh` (adds the deploy service). HTTPS certificates are automatic.
 
-**Use it:** tell the PM "deploy tstauto to the preview site", or `/site tstauto`. `/site` shows what's
+**Use it:** tell the PM "deploy tstauto to the preview site", or `/site tstauto`. A specific branch,
+tag or commit: `/site tstauto feature/seo` (the team's copy first, then GitHub, fetched fresh). `/site` shows what's
 live, `/site log` the last deploy's output, `/site stop` stops it (data is kept).
 
 **How it works:** the bot snapshots the project's *committed* code and asks the host

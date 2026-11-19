@@ -308,3 +308,86 @@ def test_old_master_gets_preview_rule_skill_and_gitignore(make_orch):
     assert (master / ".claude" / "skills" / "preview-site" / "SKILL.md").exists()
     layout.init_master(o)                                         # idempotent
     assert md.read_text().count("deploy_preview_site") == 1
+
+
+# ---------------------------------------------------------------- deploying a branch
+def _commit(repo, msg, **files):
+    for name, text in files.items():
+        (repo / name).write_text(text)
+    subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True)
+    subprocess.run(["git", "-C", str(repo), "commit", "-qm", msg], check=True)
+    return subprocess.run(["git", "-C", str(repo), "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
+
+
+def _tar_file(control, ident, name):
+    return subprocess.run(["tar", "-xOf", str(control / "site" / f"{ident}.tar"), name],
+                          capture_output=True, text=True).stdout
+
+
+def test_deploy_a_local_branch_without_switching(site):
+    control, repo = site
+    subprocess.run(["git", "-C", str(repo), "switch", "-qc", "feature/seo"], check=True)
+    sha = _commit(repo, "SEO meta tags", README="seo\n")
+    subprocess.run(["git", "-C", str(repo), "switch", "-q", "-"], check=True)      # team is back on main
+    text, ident = preview_site.request_deploy("tstauto", repo, ref="feature/seo")
+    assert ident and "feature/seo" in text and "from the team's copy" in text
+    assert json.loads((control / "site-request").read_text())["commit"] == sha
+    assert _tar_file(control, ident, "README") == "seo\n"
+    assert "[feature/seo] SEO meta tags" == json.loads((control / "site-request").read_text())["title"]
+
+
+def test_deploy_a_branch_that_is_only_on_github(site, tmp_path):
+    control, repo = site
+    origin = tmp_path / "origin"
+    subprocess.run(["git", "clone", "-q", str(repo), str(origin)], check=True)
+    subprocess.run(["git", "-C", str(origin), "switch", "-qc", "owner-fix"], check=True)
+    sha = _commit(origin, "Owner's fix", README="from github\n")
+    mirror = tmp_path / "mirror.git"
+    subprocess.run(["git", "clone", "-q", "--bare", str(repo), str(mirror)], check=True)
+    subprocess.run(["git", "-C", str(mirror), "fetch", "-q", str(origin), "+refs/heads/*:refs/remotes/origin/*"], check=True)
+    text, ident = preview_site.request_deploy("tstauto", repo, ref="owner-fix", github=mirror)
+    assert ident and "from GitHub" in text
+    assert json.loads((control / "site-request").read_text())["commit"] == sha
+    assert _tar_file(control, ident, "README") == "from github\n"
+
+
+def test_unknown_or_odd_refs_are_refused(site, tmp_path):
+    control, repo = site
+    text, ident = preview_site.request_deploy("tstauto", repo, ref="nope")
+    assert ident is None and "no branch, tag or commit 'nope'" in text
+    for bad in ("--upload-pack=x", "a..b", "a b", "x;rm"):
+        assert preview_site.request_deploy("tstauto", repo, ref=bad)[1] is None
+    assert not (control / "site-request").exists()
+
+
+def test_branch_without_preview_compose(site):
+    control, repo = site
+    subprocess.run(["git", "-C", str(repo), "switch", "-qc", "old"], check=True)
+    subprocess.run(["git", "-C", str(repo), "rm", "-q", "preview/compose.yml"], check=True)
+    _commit(repo, "old")
+    subprocess.run(["git", "-C", str(repo), "switch", "-q", "-"], check=True)
+    text, ident = preview_site.request_deploy("tstauto", repo, ref="old")
+    assert ident is None and "(old) has no preview/compose.yml" in text
+
+
+def test_deploy_wrapper_with_github_mirror(make_orch, site, monkeypatch):
+    control, _ = site
+    o = make_orch(github=True)
+    ws = o.cfg.workspace
+    ws.mkdir(parents=True, exist_ok=True)
+    if not (ws / ".git").exists():
+        subprocess.run(["git", "init", "-q", str(ws)], check=True)
+    (ws / "preview").mkdir(exist_ok=True)
+    (ws / "preview" / "compose.yml").write_text("services: {}\n")
+    _commit(ws, "app")
+    # GitHub (the bare remote) has a branch the team doesn't
+    gh_work = ws.parent / "gh-work"
+    subprocess.run(["git", "clone", "-q", str(ws), str(gh_work)], check=True)
+    subprocess.run(["git", "-C", str(gh_work), "switch", "-qc", "hotfix"], check=True)
+    sha = _commit(gh_work, "hotfix", README="hot\n")
+    subprocess.run(["git", "-C", str(gh_work), "push", "-q", o.cfg.git_remote_url, "hotfix"], check=True)
+    if not (o.mirror / "HEAD").exists():
+        subprocess.run(["git", "clone", "-q", "--bare", o.cfg.git_remote_url, str(o.mirror)], check=True)
+    text, ident = run(preview_site.deploy(o, o.main_name, "hotfix"))
+    assert ident, text
+    assert "from GitHub" in text and json.loads((control / "site-request").read_text())["commit"] == sha
