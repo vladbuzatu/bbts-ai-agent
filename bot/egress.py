@@ -46,7 +46,8 @@ CHAIN = "BBTS_AGENT_EGRESS"
 
 def allowlist() -> tuple[str, ...]:
     extra = tuple(h.strip().lower().lstrip(".") for h in os.environ.get("AGENT_EGRESS_ALLOW", "").split(",") if h.strip())
-    return DEFAULT_ALLOW + extra
+    site = os.environ.get("SITE_DOMAIN", "").strip().lower().split("://")[-1].split("/")[0].split(":")[0]
+    return DEFAULT_ALLOW + extra + ((f"={site}",) if site else ())   # agents check the preview site
 
 
 def allowed(host: str, hosts: tuple[str, ...] | None = None) -> bool:

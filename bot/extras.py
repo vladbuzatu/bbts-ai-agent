@@ -246,6 +246,9 @@ async def server(o: "Orchestrator") -> str:
         out.append(f"  ⬆️ last push {o.state.last_pushed[:7]}")
     import hostctl
     out += ["", "<b>🛠 Maintenance</b>"] + [f"  {e(line)}" for line in hostctl.summary_lines()]
+    import preview_site
+    if preview_site.domain():
+        out += [f"  {e(line)}" for line in preview_site.summary().splitlines()[:2]]
     proxy = getattr(o, "egress", None)
     if proxy:
         recent = sorted(h for h, t in proxy.blocked.items() if time.time() - t < 86400)

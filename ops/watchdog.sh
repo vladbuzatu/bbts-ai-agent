@@ -49,7 +49,14 @@ for env in staging production; do
   fi
 done
 
-# 4. Memory and disk.
+# 4. The preview site (SITE_DOMAIN): our block in the proxy survives a regenerated Caddyfile, and the
+#    project on it keeps running.
+if [ -n "$(envval SITE_DOMAIN)" ]; then
+  healed=$("$KIT_DIR/ops/site.sh" --heal 2>/dev/null)
+  [ -n "$healed" ] && tg "🩹 Watchdog: preview site – ${healed//$'\n'/; }."
+fi
+
+# 5. Memory and disk.
 read -r total avail < <(awk '/MemTotal/{t=$2}/MemAvailable/{a=$2}END{print t, a}' /proc/meminfo)
 if [ "$total" -gt 0 ] && [ $(( avail * 100 / total )) -lt 8 ] && once mem 3600; then
   top=$(docker stats --no-stream --format '{{.Name}} {{.MemUsage}}' 2>/dev/null | sort -k2 -h | tail -3 | tr '\n' ';')

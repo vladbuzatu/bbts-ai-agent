@@ -26,7 +26,17 @@ log = logging.getLogger("layout")
 # Shared by every project: they live in the master folder.
 TEAM_PATHS = (".claude/agents", ".claude/skills", "docs/LESSONS.md", "docs/STANDARDS.md",
               "design/TRENDS.md", "design/REFERENCES.md")
-MASTER_GITIGNORE = "/projects/\n.ci-logs/\n__pycache__/\n"
+# Rule changes for master CLAUDE.md files created by an older version (exact text only: an owner's own
+# edits are never touched).
+CLAUDE_MD_UPDATES = [(
+    "- Never `git push`, never add remotes, never deploy: the bot publishes verified work (pull requests) and\n"
+    "  the owner merges and deploys.",
+    "- Never `git push`, never add remotes, never deploy to staging or production: the bot publishes verified\n"
+    "  work (pull requests) and the owner merges and deploys. The one exception is the **preview site**\n"
+    "  (team tool `deploy_preview_site`, see `.claude/skills/preview-site`): deploy there whenever the owner\n"
+    "  wants to see the work.",
+)]
+MASTER_GITIGNORE = "/projects/\n.ci-logs/\n__pycache__/\n.browser/\n"
 
 
 def _markers(o: "Orchestrator") -> tuple[Path, Path]:
@@ -143,10 +153,25 @@ def init_master(o: "Orchestrator") -> None:
     if not (master / "CLAUDE.md").exists() and (master_tpl / "CLAUDE.md").exists():
         shutil.copy2(master_tpl / "CLAUDE.md", master / "CLAUDE.md")
         added.append("CLAUDE.md")
+    md = master / "CLAUDE.md"
+    if md.exists():
+        text = md.read_text()
+        for old, new in CLAUDE_MD_UPDATES:
+            if old in text:
+                text = text.replace(old, new)
+                added.append("CLAUDE.md")
+        if "CLAUDE.md" in added:
+            md.write_text(text)
     gi = master / ".gitignore"
     if not gi.exists():
         gi.write_text(MASTER_GITIGNORE)
         added.append(".gitignore")
+    else:
+        have = gi.read_text().splitlines()
+        missing = [line for line in MASTER_GITIGNORE.splitlines() if line not in have]
+        if missing:
+            gi.write_text("\n".join(have + missing) + "\n")
+            added.append(".gitignore")
     sandbox.give_to_agent(master)
     if not (master / ".git").exists():
         sandbox.git("init", "-q", "-b", "main", cwd=master, check=True)

@@ -33,6 +33,7 @@ import extras  # noqa: E402
 import hostctl  # noqa: E402
 import score  # noqa: E402
 import lab as lab_mod  # noqa: E402
+import preview_site  # noqa: E402
 from orchestrator import Config, Orchestrator  # noqa: E402
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -65,6 +66,7 @@ COMMANDS = [
     ("pm", "Back to the PM · /pm <message> asks it without leaving a job"),
     ("project", "Which project /status shows: /project <name>"),
     ("lab", "CarStage lab: what's running · spend · sync code"),
+    ("site", "Preview site: deploy a project to your domain"),
     ("update", "Update the agent team to the latest version"),
     ("score", "Scorecard per project: /score [days]"),
     ("learn", "Knowledge curator proposals"),
@@ -411,6 +413,25 @@ def build_app() -> Application:
             await orch.visual.send_diffs(project)
             return
         await send_screens(args[0] if args else "")
+
+    @owner_only
+    async def on_site(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        arg = (context.args[0].lower() if context.args else "")
+        if not arg or arg == "status":
+            await send(app, preview_site.summary())
+        elif arg == "stop":
+            await send(app, preview_site.request_stop())
+        elif arg in ("log", "logs"):
+            await send(app, "Last preview-site deploy:\n\n" + preview_site.log_tail(60))
+        elif arg in orch.project_names():
+            _, root = orch.project_root(arg)
+            text, ident = await asyncio.to_thread(preview_site.request_deploy, arg, root)
+            await send(app, text)
+            if ident:
+                orch._log(f"SITE deploy {arg} requested by the owner")
+        else:
+            await send(app, f"Unknown project {arg!r}. Projects: {', '.join(orch.project_names())}\n\n"
+                            "/site – what's live · /site <project> – deploy it · /site log · /site stop")
 
     @owner_only
     async def on_server(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -885,7 +906,7 @@ def build_app() -> Application:
                 "preview": on_preview, "learn": on_learn, "agents": on_agents, "run": on_run, "jobs": on_jobs,
                 "job": on_job, "pm": on_pm, "today": on_today, "changes": on_changes, "screens": on_screens,
                 "server": on_server, "undo": on_undo, "ask": on_ask, "live": on_live, "lab": on_lab, "project": on_project,
-                "update": on_update, "score": on_score}
+                "update": on_update, "score": on_score, "site": on_site}
     for name, fn in handlers.items():
         app.add_handler(CommandHandler(name, fn))
     app.add_handler(CallbackQueryHandler(on_button))

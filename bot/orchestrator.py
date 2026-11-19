@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Awaitable, Callable
 
 import lab as lab_mod
+import preview_site
 import sandbox
 from projects import ProjectRepos
 
@@ -46,6 +47,28 @@ commit finished tasks. Work through as many tasks as you sensibly can this round
 {scope}{extra}
 End your reply with a 2–4 line status for the owner. Use `NEEDS_INPUT:` or \
 `PROJECT_COMPLETE:` lines as described in your instructions when they apply."""
+
+
+def chromium_path() -> str | None:
+    """The Chromium Playwright installed in the image (/ms-playwright/chromium-<rev>/chrome-linux*/chrome)."""
+    import glob
+    root = os.environ.get("PLAYWRIGHT_BROWSERS_PATH", "/ms-playwright")
+    found = sorted(glob.glob(f"{root}/chromium-[0-9]*/chrome-linux*/chrome"))
+    return found[-1] if found else None
+
+
+def browser_server(output_dir: Path) -> dict | None:
+    """The agents' browser (Playwright MCP): headless, a fresh profile per session, screenshots in
+    output_dir. Through the allowlist proxy when the agents' internet is restricted. BROWSER=0 turns it off."""
+    exe = chromium_path()
+    if os.environ.get("BROWSER", "1") == "0" or not shutil.which("playwright-mcp") or not exe:
+        return None
+    args = ["--headless", "--isolated", "--browser", "chromium", "--executable-path", exe,
+            "--viewport-size", "1440,900", "--output-dir", str(output_dir), "--console-level", "warning",
+            "--timeout-navigation", "60000"]
+    if sandbox.egress_restricted():
+        args += ["--proxy-server", f"http://127.0.0.1:{sandbox.PROXY_PORT}", "--proxy-bypass", "localhost,127.0.0.1"]
+    return {"type": "stdio", "command": "playwright-mcp", "args": args}
 
 
 @dataclass
@@ -399,6 +422,8 @@ class Orchestrator:
         if self.cfg.angular_mcp and shutil.which("ng"):
             servers["angular-cli"] = {"type": "stdio", "command": "ng",
                                       "args": ["mcp", "--read-only", "--root", str(self.cfg.workspace)]}
+        if browser := browser_server(self.cfg.master / ".browser"):
+            servers["browser"] = browser
         return servers
 
     def _record_round(self, green: bool) -> None:
@@ -546,6 +571,8 @@ class Orchestrator:
         if lab_mod.CODE_DIR.is_dir():           # the CarStage lab is installed on this server
             team_tools += lab_mod.make_tools(self.studio.lab, self.pm_lab_job, self._save_state, self._log)
             lab_dirs = [str(self.pm_lab_job()["dir"])] + ([str(lab_mod.CODE_DIR)] if lab_mod.CODE_DIR.is_dir() else [])
+        if preview_site.domain():                 # the preview site (SITE_DOMAIN) is configured
+            team_tools += preview_site.make_tools(self)
         team_server = create_sdk_mcp_server(name="team", tools=team_tools)
         return ClaudeAgentOptions(
             max_buffer_size=sandbox.SDK_MAX_BUFFER,   # images read by agents can exceed the 1 MB default

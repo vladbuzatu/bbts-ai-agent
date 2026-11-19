@@ -19,8 +19,10 @@ This is the team's **master folder**. Every project lives in its own folder with
 ## Git
 - Each project is its own repo. Commit there with the task ID: `git commit -m "D-04: editor before/after"`.
 - Work on a feature branch (the PM creates it): `git switch -c feature/<task-id>-<short-name>`.
-- Never `git push`, never add remotes, never deploy: the bot publishes verified work (pull requests) and
-  the owner merges and deploys.
+- Never `git push`, never add remotes, never deploy to staging or production: the bot publishes verified
+  work (pull requests) and the owner merges and deploys. The one exception is the **preview site**
+  (team tool `deploy_preview_site`, see `.claude/skills/preview-site`): deploy there whenever the owner
+  wants to see the work.
 - Never commit secrets. `.env` files are git-ignored; commit `.env.example`.
 
 ## Team rules

@@ -6,6 +6,7 @@
 #   bbts-update-check.timer hourly: is a newer kit version on GitHub? (shown in /server)
 #   bbts-watchdog.timer     every 2 min: restart what stopped, reconnect staging, memory/disk alerts
 #   bbts-backup.timer       nightly 03:40: backups to /var/backups/bbts (ops/restore.sh to restore)
+#   bbts-site.path          /site in Telegram (or the PM) -> ops/site.sh: the preview site on SITE_DOMAIN
 # Safe to run again (e.g. after the kit folder moved).
 set -euo pipefail
 [ "$(id -u)" = 0 ] || { echo "Run as root: sudo $0"; exit 1; }
@@ -30,6 +31,23 @@ Description=Agent team: watch for /update requests from Telegram
 [Path]
 PathExists=$CONTROL/update-request
 Unit=bbts-update.service
+[Install]
+WantedBy=multi-user.target
+EOF2
+unit bbts-site.service <<EOF2
+[Unit]
+Description=Agent team: deploy a project to the preview site
+[Service]
+Type=oneshot
+TimeoutStartSec=45min
+ExecStart=$KIT_DIR/ops/site.sh
+EOF2
+unit bbts-site.path <<EOF2
+[Unit]
+Description=Agent team: watch for preview-site requests from the bot
+[Path]
+PathExists=$CONTROL/site-request
+Unit=bbts-site.service
 [Install]
 WantedBy=multi-user.target
 EOF2
@@ -87,8 +105,10 @@ WantedBy=timers.target
 EOF2
 
 systemctl daemon-reload
-systemctl enable --now bbts-update.path bbts-update-check.timer bbts-watchdog.timer bbts-backup.timer >/dev/null
+systemctl enable --now bbts-update.path bbts-site.path bbts-update-check.timer bbts-watchdog.timer bbts-backup.timer >/dev/null
 rm -f "$CONTROL/update-request"
+mkdir -p /var/lib/bbts/site "$CONTROL/site" && chmod 700 /var/lib/bbts/site "$CONTROL/site"
+echo 1 > "$CONTROL/site-ready"     # tells the bot that /site can deploy
 "$KIT_DIR/ops/update.sh" --check >/dev/null 2>&1 || true
 echo "Installed. Timers:"
 systemctl list-timers 'bbts-*' --no-pager | head -6

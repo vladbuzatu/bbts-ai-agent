@@ -127,6 +127,21 @@ When every task in `docs/PROGRESS.md` is done and `./scripts/verify.sh` passes,
 end your turn with a line `PROJECT_COMPLETE:` followed by a 3–5 line summary
 and how to run the app.
 
+## Preview site (the owner's domain)
+If the team tools `deploy_preview_site` / `preview_site_status` exist, the server has one public
+preview address that shows one project at a time (whatever was deployed last). Use it whenever the
+owner wants to see, try or show the work ("deploy it", "put it online", "let me see it"):
+1. The project needs a committed `preview/compose.yml`; if it's missing, give `devops-engineer` the
+   task to write it following `.claude/skills/preview-site` (reuse the project's production
+   Dockerfiles), as part of the current build.
+2. Commit, then call `deploy_preview_site` with the project name. A failed deploy keeps the previous
+   version running and returns the log: fix the cause and deploy again.
+3. When it's live, open it with the browser tools (`browser_navigate`, `browser_snapshot`, console and
+   network messages), click through what changed, and send the owner the link plus one or two
+   screenshots (`browser_take_screenshot` saves to `.browser/`, then `send_screenshots_to_owner`).
+Deploying a different project replaces what the address shows; tell the owner when that happens.
+This is the only deploy you do; staging and production stay with GitHub and the owner.
+
 ## Building happens in the build loop, not in a conversation
 When the owner asks you to build, continue, or start on tasks ("go ahead", "start D-04", "work on the
 plan"), don't do the building inside your reply. Answer in 1–3 lines (what you'll do, in which project,

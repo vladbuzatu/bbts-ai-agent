@@ -48,6 +48,7 @@ Type `/` in the chat for the menu. Many messages also come with **tap-to-answer 
 | `/ask <agent> <question>` | Ask one specialist, read-only |
 | `/undo` | Undo the last finished task (with confirmation) |
 | `/preview` | Run the app on the server to try it via SSH tunnel |
+| `/site [project\|log\|stop]` | Preview site: put a project on your domain, see what's live |
 | `/verify` · `/push` | Full test run · test and push to GitHub |
 | `/deploy` · `history` · `drill` | Promote staging to production · past deploys · rollback fire drill |
 | `/server` | CPU/RAM/disk, Claude usage window, versions running |
@@ -133,6 +134,40 @@ ssh -L 4200:localhost:4200 -L 8000:localhost:8000 you@your-server
 and open http://localhost:4200. The project itself is a normal git repo in
 a Docker volume. Copy it out any time with
 `docker compose cp agents:/workspace ./my-project`.
+
+## Preview site (your own domain) and the agents' browser
+
+One public address that shows **one project at a time**, whichever you or the PM deployed last. You
+see the work without deploying anything yourself. Search engines and AI crawlers are told not to
+index it (robots.txt + `X-Robots-Tag: noindex`).
+
+**Set up once**
+1. Create a free name at https://www.duckdns.org (e.g. `bbts-preview`) and set its IP to the server's.
+2. In the kit's `.env`: `SITE_DOMAIN=bbts-preview.duckdns.org`, then `docker compose up -d` and
+   `sudo ops/install.sh` (adds the deploy service). HTTPS certificates are automatic.
+
+**Use it:** tell the PM "deploy tstauto to the preview site", or `/site tstauto`. `/site` shows what's
+live, `/site log` the last deploy's output, `/site stop` stops it (data is kept).
+
+**How it works:** the bot snapshots the project's *committed* code and asks the host
+(`ops/site.sh`, via `/var/lib/bbts/control`) to build it from the project's `preview/compose.yml`
+(the agents write it; skill `.claude/skills/preview-site`). The host refuses compose files that could
+reach the server (bind mounts, privileged, published ports, host network, host env files…), limits
+every service (`SITE_MEM`, 1 CPU), builds while the old version keeps serving, checks that `web`
+answers, then points the address at it through the existing HTTPS proxy (Caddy). A version that
+doesn't start is rolled back. Switching projects stops the previous one (its database is kept).
+API keys a project needs go in `/var/lib/bbts/site/<project>/secrets.env` on the server (`NAME=value`,
+used as `${NAME}` in the compose file). The watchdog puts the proxy entry back if the Caddyfile is
+regenerated (e.g. by StocFresh's `server-setup.sh`).
+
+**Memory:** the server also runs the agents. A Django + Angular preview needs about 0.5–1 GB, and the
+Angular build briefly more; on a 4 GB server keep one preview at a time (that's the design).
+
+**The agents' browser:** every agent has a real headless Chromium (Playwright MCP, tools
+`browser_*`): it opens the preview site or the dev servers, clicks through flows, reads console and
+network errors and takes screenshots (saved in the master folder's `.browser/`, sent to you with
+`send_screenshots_to_owner`). With `AGENT_EGRESS=restricted` it goes through the allowlist, which
+includes SITE_DOMAIN. `BROWSER=0` in `.env` turns it off.
 
 ## GitHub and deployment
 

@@ -41,6 +41,8 @@ for env in staging production; do
   docker inspect "$c" >/dev/null 2>&1 || continue
   docker exec "$c" pg_dump -U app app 2>/dev/null | gzip > "$DEST/db-$env.sql.gz" || fail+=("db-$env")
 done
+# Preview site: its settings and secrets (the code is in git; its demo data isn't worth the space).
+[ -d /var/lib/bbts/site ] && { tar czf "$DEST/site.tgz" -C /var/lib/bbts/site --exclude='src-*' . 2>/dev/null || fail+=(site); }
 cp "$KIT_DIR/.env" "$DEST/env" 2>/dev/null && chmod 600 "$DEST/env"
 size=$(du -sh "$DEST" | cut -f1)
 

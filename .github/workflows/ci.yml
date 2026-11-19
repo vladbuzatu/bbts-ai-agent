@@ -37,11 +37,22 @@ jobs:
             gitleaks version; ng version >/dev/null 2>&1 || npx -y @angular/cli@22 version >/dev/null
             /opt/lab-venv/bin/python -c "import rembg, cv2, google.genai, openai"
             id agent; id lab'
+      - name: The agents' browser works (Playwright MCP + the image's Chromium, as the agent user)
+        timeout-minutes: 5
+        run: docker run --rm -u agent -w /app --entrypoint python bbts-agents:ci tests/browser_check.py
+  preview-site:
+    # ops/site.sh for real: Docker, a Caddy proxy like the server's, deploys, rollback, refusals.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Deploy, switch, roll back, refuse, heal, stop
+        run: sudo bash tests/site_e2e.sh
   lint:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
       - name: ruff
-        run: pipx run ruff check bot tests --select F,E9 --ignore F401,F841,F541
+        run: pipx run ruff check bot tests ops/site_check.py --select F,E9 --ignore F401,F841,F541
       - name: shellcheck
-        run: shellcheck -S warning ops/*.sh workspace-template/deploy/*.sh workspace-template/deploy/deploy-gate workspace-template/scripts/verify.sh
+        run: shellcheck -S warning ops/*.sh tests/site_e2e.sh workspace-template/deploy/*.sh workspace-template/deploy/deploy-gate workspace-template/scripts/verify.sh

@@ -22,6 +22,13 @@ ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
 RUN npm install -g playwright@${PLAYWRIGHT_VERSION} --no-audit --no-fund \
     && playwright install --with-deps chromium
 
+# A browser the agents drive themselves (Playwright MCP): open the app or the preview site, click,
+# fill forms, read console errors, take screenshots. It uses the Chromium above (the bot passes its
+# path), so no second browser download.
+ARG PLAYWRIGHT_MCP_VERSION=0.0.84
+RUN npm install -g @playwright/mcp@${PLAYWRIGHT_MCP_VERSION} --no-audit --no-fund \
+    && command -v playwright-mcp
+
 # Angular CLI (matches the playbooks); also provides Angular's AI tooling (`ng mcp`)
 RUN npm install -g @angular/cli@22 --no-audit --no-fund
 
